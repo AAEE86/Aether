@@ -1,8 +1,8 @@
 <template>
   <Dialog
     :model-value="open"
-    :title="legacyT('远程配置')"
-    :description="legacyT('修改后将在下次心跳时自动下发到 aether-tunnel 节点')"
+    :title="t('ui.remoteConfig')"
+    :description="t('ui.changesAreSentToTheAetherTunnelNodeOnIts')"
     :icon="Settings"
     size="md"
     @update:model-value="$emit('update:open', $event)"
@@ -12,17 +12,17 @@
       @submit.prevent
     >
       <div class="space-y-1.5">
-        <Label>{{ legacyT('允许的端口') }}</Label>
+        <Label>{{ t('ui.allowedPorts') }}</Label>
         <Input
           v-model="allowedPorts"
           placeholder="80, 443, 8080, 8443"
         />
         <p class="text-xs text-muted-foreground">
-          {{ legacyT('逗号分隔的目标端口白名单') }}
+          {{ t('ui.commaSeparatedTargetPortAllowlist') }}
         </p>
       </div>
       <div class="space-y-1.5">
-        <Label>{{ legacyT('日志级别') }}</Label>
+        <Label>{{ t('ui.logLevel') }}</Label>
         <Select v-model="logLevel">
           <SelectTrigger><SelectValue /></SelectTrigger>
           <SelectContent>
@@ -46,7 +46,7 @@
       </div>
       <div class="grid grid-cols-2 gap-4">
         <div class="space-y-1.5">
-          <Label>{{ legacyT('心跳间隔 (秒)') }}</Label>
+          <Label>{{ t('ui.heartbeatIntervalSeconds') }}</Label>
           <Input
             v-model="heartbeatInterval"
             type="number"
@@ -55,7 +55,7 @@
           />
         </div>
         <div class="space-y-1.5">
-          <Label>{{ legacyT('接单状态') }}</Label>
+          <Label>{{ t('ui.schedulingState') }}</Label>
           <Select v-model="schedulingState">
             <SelectTrigger><SelectValue /></SelectTrigger>
             <SelectContent>
@@ -71,25 +71,25 @@
             </SelectContent>
           </Select>
           <p class="text-xs text-muted-foreground">
-            {{ legacyT('draining/cordoned 都会停止新隧道请求；draining 用于排空，cordoned 用于人工隔离。') }}
+            {{ t('ui.drainingAndCordonedBothStopNewTunnelRequestsDrainingIs') }}
           </p>
         </div>
       </div>
       <div class="space-y-1.5">
-        <Label>{{ legacyT('升级到版本') }}</Label>
+        <Label>{{ t('ui.upgradeToVersion') }}</Label>
         <Input
           v-model="upgradeTo"
-          :placeholder="legacyT('例如 0.2.3')"
+          :placeholder="t('ui.example023')"
         />
         <p class="text-xs text-muted-foreground">
-          {{ legacyT('留空可清除已有升级指令') }}
+          {{ t('ui.leaveEmptyToClearAnExistingUpgradeCommand') }}
         </p>
       </div>
       <div
         v-if="node"
         class="text-xs text-muted-foreground"
       >
-        {{ legacyT('配置版本:') }} v{{ node.config_version }}
+        {{ t('ui.configVersion') }} v{{ node.config_version }}
       </div>
     </form>
     <template #footer>
@@ -97,13 +97,13 @@
         variant="outline"
         @click="$emit('update:open', false)"
       >
-        {{ legacyT('取消') }}
+        {{ t('common.cancel') }}
       </Button>
       <Button
         :disabled="saving"
         @click="$emit('save')"
       >
-        {{ saving ? legacyT('保存中...') : legacyT('保存') }}
+        {{ saving ? t('ui.saving') : t('ui.save') }}
       </Button>
     </template>
   </Dialog>
@@ -130,7 +130,7 @@ const emit = defineEmits<{
   save: []
 }>()
 
-const { legacyT } = useI18n()
+const { t } = useI18n()
 
 const allowedPorts = computed({
   get: () => props.form.allowed_ports,

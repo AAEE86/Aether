@@ -1,8 +1,8 @@
 <template>
   <Dialog
     :model-value="open"
-    :title="editingNode ? legacyT('编辑代理节点') : legacyT('添加代理节点')"
-    :description="editingNode ? legacyT('修改手动代理节点的配置') : legacyT('推荐使用一键脚本部署 aether-tunnel，也可手动或批量添加已有 HTTP/SOCKS 代理')"
+    :title="editingNode ? t('ui.editProxyNode') : t('ui.addProxyNode')"
+    :description="editingNode ? t('ui.modifyTheManualProxyNodeConfiguration') : t('ui.useTheOneClickScriptToDeployAetherTunnelOr')"
     :icon="editingNode ? SquarePen : Plus"
     size="lg"
     @update:model-value="$emit('update:open', $event)"
@@ -18,7 +18,7 @@
         @click="$emit('update:addMode', 'script')"
       >
         <Terminal class="w-3.5 h-3.5 mr-1.5" />
-        {{ legacyT('脚本自动添加') }}
+        {{ t('ui.addWithScript') }}
       </Button>
       <Button
         type="button"
@@ -27,7 +27,7 @@
         @click="$emit('update:addMode', 'manual')"
       >
         <Plus class="w-3.5 h-3.5 mr-1.5" />
-        {{ legacyT('手动添加') }}
+        {{ t('ui.addManually') }}
       </Button>
       <Button
         type="button"
@@ -36,7 +36,7 @@
         @click="$emit('update:addMode', 'batch')"
       >
         <ListPlus class="w-3.5 h-3.5 mr-1.5" />
-        {{ legacyT('批量添加') }}
+        {{ t('ui.batchAdd') }}
       </Button>
     </div>
 
@@ -45,20 +45,20 @@
       class="space-y-4"
     >
       <div class="rounded-lg border border-border/60 bg-muted/30 p-3 text-xs text-muted-foreground">
-        {{ legacyT('输入节点名称后生成一次性安装命令，有效期 15 分钟。复制的命令不含敏感授权信息，只能在目标机器使用一次，避免 Token 暴露在页面或聊天记录中。') }}
+        {{ t('ui.enterANodeNameToGenerateAOneTimeInstall') }}
       </div>
 
       <div class="space-y-1.5">
-        <Label>{{ legacyT('节点名称 *') }}</Label>
+        <Label>{{ t('ui.nodeName') }}</Label>
         <Input
           v-model="installNodeName"
-          :placeholder="legacyT('例如: jp-proxy-01')"
+          :placeholder="t('ui.exampleJpProxy01')"
           @keyup.enter="$emit('refresh-install-command')"
         />
       </div>
 
       <div class="space-y-2">
-        <Label class="text-sm font-semibold">{{ legacyT('目标系统') }}</Label>
+        <Label class="text-sm font-semibold">{{ t('ui.targetSystem') }}</Label>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
           <Button
             type="button"
@@ -81,7 +81,7 @@
 
       <div class="space-y-2">
         <div class="flex items-center justify-between gap-2">
-          <Label class="text-sm font-semibold">{{ legacyT('复制到代理节点机器执行') }}</Label>
+          <Label class="text-sm font-semibold">{{ t('ui.copyAndRunOnTheProxyNodeMachine') }}</Label>
           <div class="flex items-center gap-2">
             <Button
               variant="outline"
@@ -98,7 +98,7 @@
                 v-else
                 class="h-3.5 w-3.5"
               />
-              {{ installCopied ? legacyT('已复制') : legacyT('一键复制') }}
+              {{ installCopied ? t('common.copied') : t('ui.copyCommand') }}
             </Button>
             <Button
               variant="ghost"
@@ -106,15 +106,15 @@
               :disabled="installLoading || !installForm.node_name.trim()"
               @click="$emit('refresh-install-command')"
             >
-              {{ legacyT(installLoading ? '生成中...' : proxyInstallCommand ? '重新生成' : '生成命令') }}
+              {{ installLoading ? t('ui.generating') : proxyInstallCommand ? t('ui.regenerate') : t('ui.generateCommand') }}
             </Button>
           </div>
         </div>
         <div class="rounded-lg border border-border/60 bg-background overflow-hidden">
-          <pre class="max-h-32 overflow-x-auto whitespace-pre-wrap break-all p-3 text-xs font-mono">{{ proxyInstallCommand || legacyT('输入节点名称后点击“生成命令”') }}</pre>
+          <pre class="max-h-32 overflow-x-auto whitespace-pre-wrap break-all p-3 text-xs font-mono">{{ proxyInstallCommand || t('ui.enterANodeNameAndClickGenerateCommand') }}</pre>
         </div>
         <p class="text-xs text-muted-foreground">
-          {{ legacyT(proxyInstallHint) }}
+          {{ proxyInstallHint }}
         </p>
       </div>
     </div>
@@ -124,11 +124,11 @@
       class="space-y-4"
     >
       <div class="rounded-lg border border-border/60 bg-muted/30 p-3 text-xs text-muted-foreground">
-        {{ legacyT('支持一行一个，或使用英文逗号分隔。URL 中的用户名和密码会自动拆分到手动添加接口，节点名称自动使用主机和端口。') }}
+        {{ t('ui.supportsOneEntryPerLineOrCommaSeparatedEntriesUsernames') }}
       </div>
 
       <div class="space-y-1.5">
-        <Label>{{ legacyT('代理地址 *') }}</Label>
+        <Label>{{ t('ui.proxyAddress') }}</Label>
         <Textarea
           v-model="batchContent"
           class="min-h-[180px] font-mono text-xs break-all !rounded-xl"
@@ -141,28 +141,28 @@
         class="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-xs text-destructive"
       >
         <div class="font-medium">
-          {{ legacyT(`有 ${batchParseResult.errors.length} 条格式错误`) }}
+          {{ t('ui.valueFormatErrors', { count: batchParseResult.errors.length }) }}
         </div>
         <ul class="mt-1 space-y-1">
           <li
             v-for="message in batchParseResult.errors.slice(0, 3)"
             :key="message"
           >
-            {{ legacyT(message) }}
+            {{ message }}
           </li>
         </ul>
         <div
           v-if="batchParseResult.errors.length > 3"
           class="mt-1 text-destructive/80"
         >
-          {{ legacyT(`还有 ${batchParseResult.errors.length - 3} 条错误未显示`) }}
+          {{ t('ui.valueMoreErrorsHidden', { count: batchParseResult.errors.length - 3 }) }}
         </div>
       </div>
       <p
         v-else-if="batchForm.content.trim()"
         class="text-xs text-muted-foreground"
       >
-        {{ legacyT(`已识别 ${batchParseResult.nodes.length} 个代理节点。`) }}
+        {{ t('ui.valueProxyNodesRecognized', { count: batchParseResult.nodes.length }) }}
       </p>
     </div>
 
@@ -172,25 +172,25 @@
       @submit.prevent="$emit('submit-manual')"
     >
       <div class="space-y-1.5">
-        <Label>{{ legacyT('名称 *') }}</Label>
+        <Label>{{ t('ui.name') }}</Label>
         <Input
           v-model="manualName"
-          :placeholder="legacyT('例如: 美西 VPN 代理')"
+          :placeholder="t('ui.exampleUsWestVpnProxy')"
         />
       </div>
       <div class="space-y-1.5">
-        <Label>{{ legacyT('代理地址 *') }}</Label>
+        <Label>{{ t('ui.proxyAddress') }}</Label>
         <Input
           v-model="manualProxyUrl"
-          :placeholder="legacyT('http://proxy:port 或 socks5://proxy:port')"
+          :placeholder="t('ui.httpProxyPortOrSocks5ProxyPort')"
         />
       </div>
       <div class="grid grid-cols-2 gap-3">
         <div class="space-y-1.5">
-          <Label>{{ legacyT('用户名') }}</Label>
+          <Label>{{ t('auth.register.username') }}</Label>
           <Input
             v-model="manualUsername"
-            :placeholder="legacyT('可选')"
+            :placeholder="t('ui.optional')"
             autocomplete="off"
             data-form-type="other"
             data-lpignore="true"
@@ -198,12 +198,12 @@
           />
         </div>
         <div class="space-y-1.5">
-          <Label>{{ legacyT('密码') }}</Label>
+          <Label>{{ t('auth.register.password') }}</Label>
           <Input
             v-model="manualPassword"
             type="text"
             masked
-            :placeholder="legacyT('可选')"
+            :placeholder="t('ui.optional')"
             autocomplete="new-password"
             data-form-type="other"
             data-lpignore="true"
@@ -212,10 +212,10 @@
         </div>
       </div>
       <div class="space-y-1.5">
-        <Label>{{ legacyT('区域') }}</Label>
+        <Label>{{ t('ui.region') }}</Label>
         <Input
           v-model="manualRegion"
-          :placeholder="legacyT('可选，例如: US-West')"
+          :placeholder="t('ui.optionalEGUsWest')"
         />
       </div>
     </form>
@@ -229,13 +229,13 @@
           variant="outline"
           @click="$emit('update:open', false)"
         >
-          {{ legacyT('关闭') }}
+          {{ t('ui.close') }}
         </Button>
         <Button
           :disabled="installLoading || !proxyInstallCommand"
           @click="$emit('copy-install-command')"
         >
-          {{ installCopied ? legacyT('已复制') : legacyT('复制命令') }}
+          {{ installCopied ? t('common.copied') : t('ui.copyCommand605c82d') }}
         </Button>
       </div>
       <div
@@ -243,20 +243,20 @@
         class="flex items-center justify-between gap-3 w-full"
       >
         <span class="text-xs text-muted-foreground">
-          {{ batchForm.content.trim() ? legacyT(`待添加 ${batchParseResult.nodes.length} 个`) : legacyT('等待输入代理地址') }}
+          {{ batchForm.content.trim() ? t('ui.valuePending', { count: batchParseResult.nodes.length }) : t('ui.waitingForProxyAddresses') }}
         </span>
         <div class="flex items-center gap-2">
           <Button
             variant="outline"
             @click="$emit('update:open', false)"
           >
-            {{ legacyT('取消') }}
+            {{ t('common.cancel') }}
           </Button>
           <Button
             :disabled="addingNode || !batchForm.content.trim() || batchParseResult.errors.length > 0 || batchParseResult.nodes.length === 0"
             @click="$emit('submit-batch')"
           >
-            {{ addingNode ? legacyT('添加中...') : legacyT('批量添加') }}
+            {{ addingNode ? t('ui.adding') : t('ui.batchAdd') }}
           </Button>
         </div>
       </div>
@@ -269,14 +269,14 @@
           :disabled="testingUrl || !addForm.proxy_url"
           @click="$emit('test-url')"
         >
-          {{ testingUrl ? legacyT('测试中...') : legacyT('测试') }}
+          {{ testingUrl ? t('ui.testing7b6187c') : t('ui.test') }}
         </Button>
         <div class="flex items-center gap-2">
           <Button
             variant="outline"
             @click="$emit('update:open', false)"
           >
-            {{ legacyT('取消') }}
+            {{ t('common.cancel') }}
           </Button>
           <Button
             :disabled="addingNode || !addForm.name || !addForm.proxy_url"
@@ -336,7 +336,7 @@ const emit = defineEmits<{
   'test-url': []
 }>()
 
-const { legacyT } = useI18n()
+const { t } = useI18n()
 
 const installNodeName = computed({
   get: () => props.installForm.node_name,
@@ -375,8 +375,8 @@ const manualRegion = computed({
 
 const submitLabel = computed(() => {
   if (props.addingNode) {
-    return legacyT(props.editingNode ? '保存中...' : '添加中...')
+    return props.editingNode ? t('ui.saving') : t('ui.adding')
   }
-  return legacyT(props.editingNode ? '保存' : '添加')
+  return props.editingNode ? t('ui.save') : t('ui.add')
 })
 </script>

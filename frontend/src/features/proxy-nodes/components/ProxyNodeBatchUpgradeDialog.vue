@@ -1,8 +1,8 @@
 <template>
   <Dialog
     :model-value="open"
-    :title="legacyT('批量升级')"
-    :description="legacyT('给所有 tunnel 节点写入升级目标，节点会在下次心跳自动领取')"
+    :title="t('ui.batchUpgrade')"
+    :description="t('ui.writeAnUpgradeTargetToAllTunnelNodesNodesPick')"
     :icon="Settings"
     size="sm"
     @update:model-value="$emit('update:open', $event)"
@@ -12,14 +12,14 @@
       @submit.prevent="$emit('submit')"
     >
       <div class="space-y-1.5">
-        <Label>{{ legacyT('目标版本') }}</Label>
+        <Label>{{ t('update.version.target') }}</Label>
         <Input
           :model-value="version"
-          :placeholder="legacyT('例如 0.2.3')"
+          :placeholder="t('ui.example023')"
           @update:model-value="$emit('update:version', String($event))"
         />
         <p class="text-xs text-muted-foreground">
-          {{ legacyT('gateway 只会写入 `upgrade_to` 目标版本，不再维护分波 rollout 或确认状态。') }}
+          {{ t('ui.theGatewayOnlyWritesTheUpgradeToTargetVersionAnd') }}
         </p>
       </div>
     </form>
@@ -28,13 +28,13 @@
         variant="outline"
         @click="$emit('update:open', false)"
       >
-        {{ legacyT('取消') }}
+        {{ t('common.cancel') }}
       </Button>
       <Button
         :disabled="upgrading || !version.trim()"
         @click="$emit('submit')"
       >
-        {{ upgrading ? legacyT('下发中...') : legacyT('确认下发') }}
+        {{ upgrading ? t('ui.dispatching') : t('ui.confirmDispatch') }}
       </Button>
     </template>
   </Dialog>
@@ -57,5 +57,5 @@ defineEmits<{
   submit: []
 }>()
 
-const { legacyT } = useI18n()
+const { t } = useI18n()
 </script>

@@ -4,10 +4,10 @@
       <div class="flex items-center justify-between gap-3">
         <div>
           <h4 class="text-sm font-semibold">
-            批量生成兑换码
+            {{ t('ui.generateRedemptionCodesInBulk') }}
           </h4>
           <p class="text-xs text-muted-foreground mt-1">
-            生成后本会话可切换显示明文；页面刷新后仅保留脱敏码。
+            {{ t('ui.newlyGeneratedCodesCanBeRevealedDuringThisSessionAfter') }}
           </p>
         </div>
         <RefreshButton
@@ -18,11 +18,11 @@
 
       <div class="grid gap-3 lg:grid-cols-4">
         <div class="space-y-1.5">
-          <Label>批次名称</Label>
+          <Label>{{ t('ui.batchName') }}</Label>
           <Input v-model="redeemBatchForm.name" />
         </div>
         <div class="space-y-1.5">
-          <Label>面额 (USD)</Label>
+          <Label>{{ t('ui.faceValueUsd') }}</Label>
           <Input
             v-model.number="redeemBatchForm.amount_usd"
             type="number"
@@ -31,7 +31,7 @@
           />
         </div>
         <div class="space-y-1.5">
-          <Label>生成数量</Label>
+          <Label>{{ t('ui.numberToGenerate') }}</Label>
           <Input
             v-model.number="redeemBatchForm.total_count"
             type="number"
@@ -40,7 +40,7 @@
           />
         </div>
         <div class="space-y-1.5">
-          <Label>过期时间（可选）</Label>
+          <Label>{{ t('ui.expirationOptional') }}</Label>
           <Input
             v-model="redeemBatchForm.expires_at"
             type="datetime-local"
@@ -49,11 +49,11 @@
       </div>
 
       <div class="space-y-1.5">
-        <Label>备注（可选）</Label>
+        <Label>{{ t('ui.notesOptional') }}</Label>
         <Textarea
           v-model="redeemBatchForm.description"
           rows="3"
-          placeholder="例如：五一活动 / 线下渠道 / KOC 发放"
+          :placeholder="t('ui.forExampleHolidayCampaignOfflineChannelCommunityDistribution')"
         />
       </div>
 
@@ -63,13 +63,13 @@
           :disabled="!canExportLatestGeneratedRedeemCodes"
           @click="exportLatestGeneratedRedeemCodes"
         >
-          导出最近生成
+          {{ t('ui.exportLatestBatch') }}
         </Button>
         <Button
           :disabled="submittingRedeemBatch"
           @click="submitRedeemCodeBatch"
         >
-          {{ submittingRedeemBatch ? '生成中...' : '生成兑换码' }}
+          {{ submittingRedeemBatch ? t('ui.generating') : t('ui.generateRedemptionCodes') }}
         </Button>
       </div>
 
@@ -77,9 +77,8 @@
         v-if="latestGeneratedRedeemBatch"
         class="rounded-xl border border-border/60 bg-muted/20 p-3 text-xs text-muted-foreground"
       >
-        最近生成批次:
-        <span class="font-medium text-foreground">{{ latestGeneratedRedeemBatch.name }}</span>
-        · {{ latestGeneratedRedeemCodes.length }} 个兑换码
+        {{ t('ui.latestGeneratedBatch') }} <span class="font-medium text-foreground">{{ latestGeneratedRedeemBatch.name }}</span>
+        · {{ latestGeneratedRedeemCodes.length }} {{ t('ui.redemptionCodes') }}
       </div>
     </div>
 
@@ -88,22 +87,22 @@
         <div class="flex flex-wrap items-center gap-2">
           <Select v-model="redeemBatchStatusFilter">
             <SelectTrigger class="w-[180px]">
-              <SelectValue placeholder="批次状态" />
+              <SelectValue :placeholder="t('ui.batchStatus')" />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">
-                全部状态
+                {{ t('ui.allStatuses') }}
               </SelectItem>
               <SelectItem value="active">
-                可用
+                {{ t('ui.available4d99c97') }}
               </SelectItem>
               <SelectItem value="disabled">
-                已停用
+                {{ t('ui.disableda8c3698') }}
               </SelectItem>
             </SelectContent>
           </Select>
           <div class="text-sm text-muted-foreground">
-            共 {{ redeemBatchTotal }} 个批次
+            {{ t('ui.total76e547a') }} {{ redeemBatchTotal }} {{ t('ui.batches') }}
           </div>
         </div>
 
@@ -112,12 +111,12 @@
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>批次</TableHead>
-                  <TableHead>面额</TableHead>
-                  <TableHead>数量</TableHead>
-                  <TableHead>状态</TableHead>
+                  <TableHead>{{ t('ui.batch') }}</TableHead>
+                  <TableHead>{{ t('ui.faceValue') }}</TableHead>
+                  <TableHead>{{ t('ui.quantity') }}</TableHead>
+                  <TableHead>{{ t('ui.status6320b4a') }}</TableHead>
                   <TableHead class="text-right">
-                    操作
+                    {{ t('ui.actionsed31fbb') }}
                   </TableHead>
                 </TableRow>
               </TableHeader>
@@ -133,18 +132,18 @@
                       {{ batch.name }}
                     </div>
                     <div class="text-xs text-muted-foreground mt-1">
-                      过期: {{ formatDateTime(batch.expires_at) }}
+                      {{ t('ui.expires') }} {{ formatDateTime(batch.expires_at) }}
                     </div>
                   </TableCell>
                   <TableCell class="tabular-nums">
                     {{ formatCurrency(batch.amount_usd) }}
                   </TableCell>
                   <TableCell class="text-xs text-muted-foreground">
-                    {{ batch.redeemed_count }} / {{ batch.total_count }} 已使用
+                    {{ batch.redeemed_count }} / {{ batch.total_count }} {{ t('ui.used9845c16') }}
                   </TableCell>
                   <TableCell>
                     <Badge :variant="batch.status === 'active' ? 'success' : 'secondary'">
-                      {{ batch.status === 'active' ? '可用' : '已停用' }}
+                      {{ batch.status === 'active' ? t('ui.available4d99c97') : t('ui.disableda8c3698') }}
                     </Badge>
                   </TableCell>
                   <TableCell class="text-right">
@@ -154,7 +153,7 @@
                         :variant="batch.id === selectedRedeemBatchId ? 'default' : 'outline'"
                         @click="selectRedeemBatch(batch)"
                       >
-                        {{ batch.id === selectedRedeemBatchId ? '当前查看' : '查看码' }}
+                        {{ batch.id === selectedRedeemBatchId ? t('ui.currentlyViewing') : t('ui.viewCodes') }}
                       </Button>
                       <Button
                         v-if="batch.status === 'active'"
@@ -162,7 +161,7 @@
                         variant="destructive"
                         @click="disableRedeemBatch(batch.id)"
                       >
-                        停用批次
+                        {{ t('ui.disableBatch') }}
                       </Button>
                       <Button
                         v-if="batch.status === 'disabled'"
@@ -171,7 +170,7 @@
                         :disabled="batch.redeemed_count > 0"
                         @click="deleteRedeemBatch(batch)"
                       >
-                        删除批次
+                        {{ t('ui.deleteBatch') }}
                       </Button>
                     </div>
                   </TableCell>
@@ -182,8 +181,8 @@
                     class="py-10"
                   >
                     <EmptyState
-                      title="暂无兑换码批次"
-                      description="创建批次后会在这里显示"
+                      :title="t('ui.noRedemptionCodeBatches')"
+                      :description="t('ui.createdBatchesWillAppearHere')"
                     />
                   </TableCell>
                 </TableRow>
@@ -208,15 +207,15 @@
         <div class="flex flex-wrap items-center justify-between gap-2">
           <div>
             <h4 class="text-sm font-semibold">
-              {{ currentRedeemBatch?.name || '兑换码列表' }}
+              {{ currentRedeemBatch?.name || t('ui.redemptionCodes59b83cf') }}
             </h4>
             <p class="text-xs text-muted-foreground mt-1">
-              {{ currentRedeemBatch ? `面额 ${formatCurrency(currentRedeemBatch.amount_usd)} · 剩余 ${currentRedeemBatch.active_count}` : '先从左侧选择一个批次' }}
+              {{ currentRedeemBatch ? t('ui.valueValueValueRemaining', { value: formatCurrency(currentRedeemBatch.amount_usd), count: currentRedeemBatch.active_count }) : t('ui.selectABatchOnTheLeft') }}
             </p>
           </div>
           <div class="flex flex-wrap items-center gap-3">
             <div class="flex items-center gap-2">
-              <span class="text-xs text-muted-foreground">显示明文</span>
+              <span class="text-xs text-muted-foreground">{{ t('ui.revealCodes') }}</span>
               <Switch
                 :model-value="showPlainRedeemCodes"
                 :disabled="!canRevealPlainRedeemCodes"
@@ -225,20 +224,20 @@
             </div>
             <Select v-model="redeemCodeStatusFilter">
               <SelectTrigger class="w-[180px]">
-                <SelectValue placeholder="码状态" />
+                <SelectValue :placeholder="t('ui.codeStatus')" />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">
-                  全部状态
+                  {{ t('ui.allStatuses') }}
                 </SelectItem>
                 <SelectItem value="active">
-                  可用
+                  {{ t('ui.available4d99c97') }}
                 </SelectItem>
                 <SelectItem value="disabled">
-                  已停用
+                  {{ t('ui.disableda8c3698') }}
                 </SelectItem>
                 <SelectItem value="redeemed">
-                  已兑换
+                  {{ t('ui.redeemed') }}
                 </SelectItem>
               </SelectContent>
             </Select>
@@ -248,8 +247,8 @@
         <div class="text-xs text-muted-foreground">
           {{
             canRevealPlainRedeemCodes
-              ? '当前批次属于本次生成，已支持明文显示开关。'
-              : '仅当前会话内最近生成的一批兑换码支持明文显示；其余批次仅显示脱敏码。'
+              ? t('ui.thisBatchWasGeneratedInTheCurrentSessionAndIts')
+              : t('ui.onlyTheLatestBatchGeneratedInThisSessionCanBe')
           }}
         </div>
 
@@ -258,12 +257,12 @@
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>兑换码</TableHead>
-                  <TableHead>状态</TableHead>
-                  <TableHead>兑换用户</TableHead>
-                  <TableHead>关联订单</TableHead>
+                  <TableHead>{{ t('ui.redeemCodeabbb615') }}</TableHead>
+                  <TableHead>{{ t('ui.status6320b4a') }}</TableHead>
+                  <TableHead>{{ t('ui.redeemedBy') }}</TableHead>
+                  <TableHead>{{ t('ui.linkedOrder0e96780') }}</TableHead>
                   <TableHead class="text-right">
-                    操作
+                    {{ t('ui.actionsed31fbb') }}
                   </TableHead>
                 </TableRow>
               </TableHeader>
@@ -293,7 +292,7 @@
                       variant="outline"
                       @click="disableRedeemCode(code.id)"
                     >
-                      停用
+                      {{ t('ui.disable4e6fd0e') }}
                     </Button>
                   </TableCell>
                 </TableRow>
@@ -303,8 +302,8 @@
                     class="py-10"
                   >
                     <EmptyState
-                      title="暂无兑换码"
-                      description="选择左侧批次后会显示兑换码明细"
+                      :title="t('ui.noRedemptionCodes')"
+                      :description="t('ui.selectABatchOnTheLeftToViewItsCodes')"
                     />
                   </TableCell>
                 </TableRow>
@@ -326,6 +325,9 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+const { t } = useI18n()
+
 import { computed, nextTick, reactive, ref, watch } from 'vue'
 import {
   Badge,
@@ -556,7 +558,7 @@ async function submitRedeemCodeBatch() {
     latestGeneratedRedeemBatch.value = resp.batch
     latestGeneratedRedeemCodes.value = resp.codes
     showPlainRedeemCodes.value = true
-    success('兑换码批次已创建')
+    success(t('ui.redemptionCodeBatchCreated'))
     redeemBatchForm.name = ''
     redeemBatchForm.description = ''
     redeemBatchForm.expires_at = ''
@@ -578,7 +580,7 @@ function exportLatestGeneratedRedeemCodes() {
     return
   }
   exportRedeemCodesCsv(latestGeneratedRedeemBatch.value, latestGeneratedRedeemCodes.value)
-  success('CSV 已导出')
+  success(t('ui.csvExported'))
 }
 
 function displayRedeemCode(code: RedeemCodeRecord) {
@@ -591,7 +593,7 @@ function displayRedeemCode(code: RedeemCodeRecord) {
 async function disableRedeemBatch(batchId: string) {
   try {
     await adminPaymentsApi.disableRedeemCodeBatch(batchId)
-    success('批次已停用')
+    success(t('ui.batchDisabled'))
     await loadBatches()
   } catch (error) {
     log.error('停用兑换码批次失败:', error)
@@ -604,13 +606,13 @@ async function deleteRedeemBatch(batch: RedeemCodeBatch) {
     showError('已有兑换记录的批次不能删除')
     return
   }
-  if (!(await confirmDanger(`确认删除批次「${batch.name}」吗？删除后无法恢复。`, '删除批次'))) {
+  if (!(await confirmDanger(t('ui.deleteBatchValueThisCannotBeUndone', { name: batch.name }), t('ui.deleteBatch')))) {
     return
   }
 
   try {
     await adminPaymentsApi.deleteRedeemCodeBatch(batch.id)
-    success('批次已删除')
+    success(t('ui.batchDeleted'))
     if (selectedRedeemBatchId.value === batch.id) {
       selectedRedeemBatchId.value = null
       currentRedeemBatch.value = null
@@ -633,7 +635,7 @@ async function deleteRedeemBatch(batch: RedeemCodeBatch) {
 async function disableRedeemCode(codeId: string) {
   try {
     await adminPaymentsApi.disableRedeemCode(codeId)
-    success('兑换码已停用')
+    success(t('ui.redemptionCodeDisabled'))
     await Promise.all([loadRedeemCodes(), loadBatches()])
   } catch (error) {
     log.error('停用兑换码失败:', error)
@@ -664,4 +666,5 @@ function handleRedeemCodePageSizeChange(size: number) {
 }
 
 defineExpose({ load: loadBatches })
+
 </script>

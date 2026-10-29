@@ -1,3 +1,4 @@
+import { translate } from '@/i18n'
 import { getCodexResetCountdown } from '@/composables/useCountdownTimer'
 import type { MessageKey } from '@/i18n/messages'
 import type { PoolKeyDetail } from '@/api/endpoints/pool'
@@ -31,6 +32,7 @@ export interface QuotaProgressDisplayItem {
 }
 
 export function normalizeQuotaLabel(label: string): string {
+  // Keep legacy parser categories stable; translate only at the display boundary.
   const normalized = label.trim()
   if (!normalized) return '额度'
   if (/spark\s*5h/i.test(normalized) || normalized.includes('Spark5H')) return 'Spark5H'
@@ -45,17 +47,21 @@ export function normalizeQuotaLabel(label: string): string {
 }
 
 export function getQuotaProgressLabel(label: string): string {
-  if (label === '日') return '日'
+  if (label === '日') return translate('ui.day85217f7')
   if (label === '5H') return '5H'
-  if (label === '周') return '周'
-  if (label === '月') return '月'
-  if (label === '周额度') return '周'
-  if (label === '月额度') return '月'
-  if (label === '额度') return '额度'
+  if (label === '周') return translate('providers.antigravity.quota.period.weekly')
+  if (label === '月') return translate('ui.month')
+  if (label === '周额度') return translate('providers.antigravity.quota.period.weekly')
+  if (label === '月额度') return translate('ui.month')
+  if (label === '额度') return translate('poolQuota.claudeCode.unknownWindow')
   if (label === 'Spark5H') return 'Spark5H'
-  if (label === 'Spark周') return 'Spark周'
-  if (label === '最低') return '最低'
-  if (label === '剩余') return '剩余'
+  if (label === 'Spark周') return translate('ui.sparkWeekly')
+  if (label === 'Spark月') return translate('ui.sparkMonthly')
+  if (label === '生图') return translate('ui.imageGeneration79f2577')
+  if (label === '速率') return translate('ui.ratea918a34')
+  if (label === '模型') return translate('ui.model')
+  if (label === '最低') return translate('ui.lowest')
+  if (label === '剩余') return translate('ui.remainingd6822b0')
   return label
 }
 
@@ -75,26 +81,26 @@ export function getQuotaProgressCountdown(item: QuotaProgressItem, tick: number)
 export function getQuotaProgressCountdownText(item: QuotaProgressItem, tick: number): string {
   const status = getQuotaProgressCountdown(item, tick)
   if (!status) return ''
-  return status.isExpired ? '' : `${status.text} 后重置`
+  return status.isExpired ? '' : translate('feedback.pool.resetsAfter', { time: status.text })
 }
 
 export function formatCompactQuotaCountdownText(text: string): string {
   const normalized = text.trim()
   const dayMatch = normalized.match(/^(\d+)天\s+(.+?)(?:\s+后重置)?$/)
   if (dayMatch) {
-    return `${dayMatch[1]}天 ${dayMatch[2]}`
+    return translate('time.countdownDays', { days: dayMatch[1], time: dayMatch[2] })
   }
-  return normalized.replace(/\s+后重置$/, '')
+  return normalized.replace(/\s+后重置$/, '').replace(/^Resets in\s+/i, '')
 }
 
 export function shouldHideQuotaProgressDetailText(text: string | null | undefined): boolean {
-  return (text ?? '').trim().includes('已重置')
+  const normalized = (text ?? '').trim()
+  return normalized.includes('已重置') || /^reset(?:\b|$)/i.test(normalized)
 }
 
 export function getQuotaProgressResetDisplayText(item: QuotaProgressItem, tick: number): string {
-  const countdownText = getQuotaProgressCountdownText(item, tick)
-  if (countdownText) return formatCompactQuotaCountdownText(countdownText)
-  return ''
+  const status = getQuotaProgressCountdown(item, tick)
+  return status && !status.isExpired ? status.text : ''
 }
 
 export function getQuotaProgressMeterDisplayText(
@@ -280,13 +286,21 @@ export function getGrokQuotaWindowLabel(window: QuotaWindowSnapshot): string {
   const code = String(window.code || '').trim().replace(/^model:/i, '')
   const label = String(window.label || window.model || code).trim()
   const normalized = (label || code).toLowerCase()
-  return GROK_QUOTA_MODE_LABELS[normalized] || GROK_QUOTA_MODE_LABELS[code.toLowerCase()] || label || code || '模式'
+  return GROK_QUOTA_MODE_LABELS[normalized] || GROK_QUOTA_MODE_LABELS[code.toLowerCase()] || label || code || translate('ui.mode')
 }
 
 export function getGeminiCliQuotaWindowLabel(window: QuotaWindowSnapshot): string {
   const code = String(window.code || '').trim().replace(/^model:/i, '')
   const label = String(window.label || window.model || code).trim()
   return label || code || '模型'
+}
+
+function formatRemainingQuotaValue(value: string): string {
+  return translate('feedback.pool.remainingValue', { value })
+}
+
+function formatQuotaItemCount(count: number): string {
+  return translate('feedback.pool.itemCount', { count })
 }
 
 export function buildQuotaProgressItemsFromSnapshot(
@@ -395,7 +409,7 @@ export function buildQuotaProgressItemsFromSnapshot(
       const detail = typeof window?.used_value === 'number' && typeof window?.limit_value === 'number'
         ? `${formatQuotaValue(window.used_value)}/${formatQuotaValue(window.limit_value)}`
         : typeof window?.remaining_value === 'number' && typeof window?.limit_value === 'number'
-          ? `剩余 ${formatQuotaValue(window.remaining_value)}/${formatQuotaValue(window.limit_value)}`
+          ? formatRemainingQuotaValue(`${formatQuotaValue(window.remaining_value)}/${formatQuotaValue(window.limit_value)}`)
           : undefined
       items.push({
         label,
@@ -422,7 +436,7 @@ export function buildQuotaProgressItemsFromSnapshot(
       items.push({
         label: '模型',
         remainingPercent: 100,
-        detail: `${quota.allowed_models_count} 个`,
+        detail: formatQuotaItemCount(quota.allowed_models_count),
         resetAtSeconds: null,
         resetSeconds: null,
         updatedAtSeconds: getQuotaSnapshotUpdatedAtSeconds(quota),
@@ -520,7 +534,7 @@ export function buildQuotaProgressItemsFromSnapshot(
       : usedValue != null && limitValue != null
         ? `${formatQuotaValue(Math.max(limitValue - usedValue, 0))}/${formatQuotaValue(limitValue)}`
         : remainingValue != null
-          ? `剩余 ${formatQuotaValue(remainingValue)}`
+          ? formatRemainingQuotaValue(formatQuotaValue(remainingValue))
           : undefined
 
     return [{

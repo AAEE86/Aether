@@ -1,7 +1,7 @@
 <template>
   <CardSection
-    title="定时任务"
-    description="配置系统后台定时任务"
+    :title="t('guide.nav.strategy.cronTasks')"
+    :description="t('ui.configureScheduledBackgroundTasks')"
   >
     <div class="space-y-3">
       <template
@@ -55,7 +55,7 @@
                 @update:model-value="(val: string) => task.updateTime(val, task.minute)"
               >
                 <SelectTrigger class="w-16 h-8 text-xs px-2 justify-center gap-1">
-                  <SelectValue placeholder="时" />
+                  <SelectValue :placeholder="t('ui.h')" />
                 </SelectTrigger>
                 <SelectContent class="min-w-0">
                   <SelectItem
@@ -73,7 +73,7 @@
                 @update:model-value="(val: string) => task.updateTime(task.hour, val)"
               >
                 <SelectTrigger class="w-16 h-8 text-xs px-2 justify-center gap-1">
-                  <SelectValue placeholder="分" />
+                  <SelectValue :placeholder="t('ui.min')" />
                 </SelectTrigger>
                 <SelectContent class="min-w-0">
                   <SelectItem
@@ -121,6 +121,8 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+
 import { Clock, Check, Loader2, X } from 'lucide-vue-next'
 import Button from '@/components/ui/button.vue'
 import Switch from '@/components/ui/switch.vue'
@@ -152,4 +154,7 @@ interface ScheduledTask {
 defineProps<{
   scheduledTasks: ScheduledTask[]
 }>()
+
+const { t } = useI18n()
+
 </script>

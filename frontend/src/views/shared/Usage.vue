@@ -8,7 +8,7 @@
       <button
         v-if="!hasScopedRecordFilters"
         class="flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition"
-        :title="statsExpanded ? '收起用量分析' : '展开用量分析'"
+        :title="statsExpanded ? t('ui.collapseUsageAnalysis') : t('ui.expandUsageAnalysis')"
         @click="statsExpanded = !statsExpanded"
       >
         <PanelTopClose
@@ -34,7 +34,7 @@
       >
         <ActivityHeatmapCard
           :data="activityHeatmapData"
-          title="我的活跃天数"
+          :title="t('ui.myActiveDays')"
           :is-loading="isLoadingHeatmap"
           :has-error="heatmapError"
         />
@@ -169,6 +169,9 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+const { t } = useI18n()
+
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { mergeUsageBillingSnapshot } from '@/features/usage/utils/usageBilling'
 import { useRoute, useRouter } from 'vue-router'
@@ -375,14 +378,14 @@ async function refreshAdminAnalytics(options: { force?: boolean; preserveOnFailu
       }
       hasSuccessfulRefresh = !hadFailure
       if (hadFailure) {
-        warning('统计数据加载失败，请刷新重试')
+        warning(t('ui.failedToLoadStatisticsRefreshToTryAgain'))
       }
     } catch (error) {
       if (refreshGeneration !== adminAnalyticsRefreshGeneration) {
         return
       }
       log.error('加载统计数据失败:', error)
-      warning('统计数据加载失败，请刷新重试')
+      warning(t('ui.failedToLoadStatisticsRefreshToTryAgain'))
     }
 
     if (hasSuccessfulRefresh && refreshGeneration === adminAnalyticsRefreshGeneration) {
@@ -928,7 +931,6 @@ const availableClientFamilies = computed(() => {
   return Array.from(families).sort()
 })
 
-
 // 详情弹窗状态
 const detailModalOpen = ref(false)
 const selectedRequestId = ref<string | null>(null)
@@ -1019,7 +1021,7 @@ onMounted(async () => {
     await Promise.allSettled([
       loadStats(timeRange.value).catch(err => {
         log.error('加载统计数据失败:', err)
-        warning('统计数据加载失败，请刷新重试')
+        warning(t('ui.failedToLoadStatisticsRefreshToTryAgain'))
       }),
       loadHeatmapData().catch(err => {
         log.error('加载热力图数据失败:', err)

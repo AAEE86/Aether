@@ -1,13 +1,14 @@
+import { translate } from '@/i18n'
 import { formatCompactNumber } from '@/utils/format'
 import { getI18nLocale } from '@/i18n'
 
 export function walletStatusLabel(status: string | null | undefined): string {
   const labels: Record<string, string> = {
-    active: '正常',
+    get active() { return translate('ui.normal') },
     suspended: '已冻结',
     closed: '已关闭',
   }
-  if (!status) return '未知'
+  if (!status) return translate('chart.unknown')
   if (getI18nLocale() === 'en-US') {
     const englishLabels: Record<string, string> = {
       active: 'Active',
@@ -37,12 +38,12 @@ export function walletStatusBadge(status: string | null | undefined) {
 
 export function walletTransactionCategoryLabel(category: string | null | undefined): string {
   const labels: Record<string, string> = {
-    recharge: '充值',
-    gift: '赠款',
-    adjust: '调账',
-    refund: '退款',
+    get recharge() { return translate('ui.topUp') },
+    get gift() { return translate('ui.giftCredit') },
+    get adjust() { return translate('ui.adjustment') },
+    get refund() { return translate('ui.refundf1c91e1') },
   }
-  if (!category) return '未知'
+  if (!category) return translate('chart.unknown')
   if (getI18nLocale() === 'en-US') {
     const englishLabels: Record<string, string> = {
       recharge: 'Top-up',
@@ -68,20 +69,20 @@ export function formatTokenCount(value: number | null | undefined): string {
 
 export function walletTransactionReasonLabel(reasonCode: string | null | undefined): string {
   const labels: Record<string, string> = {
-    topup_admin_manual: '人工充值',
-    topup_gateway: '支付充值',
-    topup_card_code: '卡密充值',
-    gift_initial: '初始赠款',
-    gift_campaign: '活动赠款',
-    gift_expire_reclaim: '赠款回收',
-    adjust_admin: '人工调账',
-    adjust_system: '系统调账',
+    get topup_admin_manual() { return translate('ui.manualTopUp') },
+    get topup_gateway() { return translate('ui.paymentTopUp') },
+    get topup_card_code() { return translate('ui.codeTopUp') },
+    get gift_initial() { return translate('ui.initialGiftCredit') },
+    get gift_campaign() { return translate('ui.promotionalGiftCredit') },
+    get gift_expire_reclaim() { return translate('ui.giftCreditReversal') },
+    get adjust_admin() { return translate('ui.manualAdjustment') },
+    get adjust_system() { return translate('ui.systemAdjustment') },
     referral_reward: '邀请返利发放',
     referral_reward_reversal: '邀请返利冲回',
-    refund_out: '退款扣减',
-    refund_revert: '退款回补',
+    get refund_out() { return translate('ui.refundDebit') },
+    get refund_revert() { return translate('ui.refundRecredit') },
   }
-  if (!reasonCode) return '未知'
+  if (!reasonCode) return translate('chart.unknown')
   if (getI18nLocale() === 'en-US') {
     const englishLabels: Record<string, string> = {
       topup_admin_manual: 'Manual top-up',
@@ -104,18 +105,18 @@ export function walletTransactionReasonLabel(reasonCode: string | null | undefin
 
 export function paymentMethodLabel(method: string | null | undefined): string {
   const labels: Record<string, string> = {
-    alipay: '支付宝',
-    wechat: '微信支付',
-    wxpay: '微信支付',
-    wechat_pay: '微信支付',
-    epay: '易支付',
+    get alipay() { return translate('ui.alipay') },
+    get wechat() { return translate('ui.wechatPay') },
+    get wxpay() { return translate('ui.wechatPay') },
+    get wechat_pay() { return translate('ui.wechatPay') },
+    get epay() { return translate('ui.epay') },
     stripe: 'Stripe',
-    card: '银行卡/信用卡',
+    get card() { return translate('ui.cardCreditCard') },
     link: 'Stripe Link',
-    admin_manual: '人工充值',
-    card_code: '充值卡',
-    gift_code: '礼品卡',
-    card_recharge: '卡密充值',
+    get admin_manual() { return translate('ui.manualTopUp') },
+    get card_code() { return translate('ui.topUpCard') },
+    get gift_code() { return translate('ui.giftCard') },
+    get card_recharge() { return translate('ui.codeTopUp') },
     bank_transfer: '银行转账',
     offline: '线下转账',
   }
@@ -144,15 +145,15 @@ export function paymentMethodLabel(method: string | null | undefined): string {
 
 export function paymentStatusLabel(status: string | null | undefined): string {
   const labels: Record<string, string> = {
-    pending: '待支付',
-    paid: '已支付',
-    credited: '已到账',
-    failed: '支付失败',
-    expired: '已过期',
+    get pending() { return translate('ui.awaitingPayment') },
+    get paid() { return translate('ui.paid0a52f8a') },
+    get credited() { return translate('ui.credited') },
+    get failed() { return translate('ui.paymentFailed') },
+    get expired() { return translate('ui.expired') },
     refunding: '退款中',
     refunded: '已退款',
   }
-  if (!status) return '未知'
+  if (!status) return translate('chart.unknown')
   if (getI18nLocale() === 'en-US') {
     const englishLabels: Record<string, string> = {
       pending: 'Pending',
@@ -170,8 +171,8 @@ export function paymentStatusLabel(status: string | null | undefined): string {
 
 export function walletLinkTypeLabel(type: string | null | undefined): string {
   const labels: Record<string, string> = {
-    payment_order: '充值订单',
-    refund_request: '退款申请',
+    get payment_order() { return translate('ui.topUpOrder') },
+    get refund_request() { return translate('ui.refundRequest') },
     referral_reward: '邀请返利记录',
     admin_action: '后台操作',
     system_task: '系统任务',
@@ -205,8 +206,8 @@ export function paymentStatusBadge(status: string | null | undefined) {
 
 export function refundModeLabel(mode: string | null | undefined): string {
   const labels: Record<string, string> = {
-    original_channel: '原路退回',
-    offline_payout: '线下打款',
+    get original_channel() { return translate('ui.originalRouteRefund') },
+    get offline_payout() { return translate('ui.offlineTransfer') },
   }
   if (!mode) return '-'
   if (getI18nLocale() === 'en-US') {
@@ -221,14 +222,14 @@ export function refundModeLabel(mode: string | null | undefined): string {
 
 export function refundStatusLabel(status: string | null | undefined): string {
   const labels: Record<string, string> = {
-    pending_approval: '待审批',
-    approved: '已审批',
-    processing: '处理中',
-    succeeded: '已完成',
-    failed: '已失败',
-    cancelled: '已取消',
+    get pending_approval() { return translate('ui.pendingApproval') },
+    get approved() { return translate('ui.approved') },
+    get processing() { return translate('ui.processing694b71b') },
+    get succeeded() { return translate('site.home.status.completed') },
+    get failed() { return translate('ui.failed7e9ef4d') },
+    get cancelled() { return translate('ui.canceled') },
   }
-  if (!status) return '未知'
+  if (!status) return translate('chart.unknown')
   if (getI18nLocale() === 'en-US') {
     const englishLabels: Record<string, string> = {
       pending_approval: 'Pending approval',
@@ -259,7 +260,7 @@ export function callbackStatusLabel(status: string | null | undefined): string {
     invalid_signature: '验签失败',
     error: '处理失败',
   }
-  if (!status) return '未知'
+  if (!status) return translate('chart.unknown')
   if (getI18nLocale() === 'en-US') {
     const englishLabels: Record<string, string> = {
       processed: 'Processed',
@@ -281,18 +282,18 @@ export function callbackStatusBadge(status: string | null | undefined) {
 }
 
 export function ownerTypeLabel(ownerType: 'user' | 'api_key') {
-  return ownerType === 'user' ? '用户钱包' : '独立密钥'
+  return ownerType === 'user' ? translate('ui.userWallet') : translate('nav.standaloneKeys')
 }
 
 export function ownerDisplayName(name: string | null | undefined, ownerType: 'user' | 'api_key') {
   if (name) return name
-  return ownerType === 'user' ? '未命名用户' : '未命名密钥'
+  return ownerType === 'user' ? translate('ui.unnamedUser') : translate('ui.unnamedKey')
 }
 
 export function redeemCodeStatusLabel(status: string) {
-  if (status === 'active') return '可用'
-  if (status === 'disabled') return '已停用'
-  if (status === 'redeemed') return '已兑换'
+  if (status === 'active') return translate('ui.available4d99c97')
+  if (status === 'disabled') return translate('ui.disableda8c3698')
+  if (status === 'redeemed') return translate('ui.redeemed')
   return status
 }
 

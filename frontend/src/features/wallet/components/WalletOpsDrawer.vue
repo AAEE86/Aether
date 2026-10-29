@@ -20,7 +20,7 @@
             <div class="min-w-0">
               <div class="flex items-center gap-1.5">
                 <h3 class="text-lg font-semibold text-foreground leading-tight">
-                  {{ contextLabel || '钱包详情' }}
+                  {{ contextLabel || t('ui.walletDetails') }}
                 </h3>
                 <Badge
                   :variant="walletStatusBadge(localWallet.status)"
@@ -38,7 +38,7 @@
             variant="ghost"
             size="icon"
             class="h-9 w-9 shrink-0"
-            title="关闭"
+            :title="t('ui.close')"
             @click="handleClose"
           >
             <X class="h-4 w-4" />
@@ -51,32 +51,32 @@
           <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             <div class="rounded-xl bg-background/80 p-3">
               <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-                总可用额度
+                {{ t('ui.totalAvailableBalance') }}
               </div>
               <div
                 class="mt-1 text-lg font-semibold"
                 :class="totalAvailableAmount !== null && totalAvailableAmount < 0 ? 'text-rose-600' : 'text-foreground'"
               >
-                {{ totalAvailableAmount === null ? '不限额' : `$${formatFixed(totalAvailableAmount, 2)}` }}
+                {{ totalAvailableAmount === null ? t('ui.unlimited4ea2cac') : `$${formatFixed(totalAvailableAmount, 2)}` }}
               </div>
             </div>
             <div class="rounded-xl bg-background/80 p-3">
               <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-                套餐今日额度
+                {{ t('ui.planQuotaToday') }}
               </div>
               <div class="mt-1 text-lg font-semibold text-foreground">
-                {{ isApiKeyWallet ? '不适用' : `$${formatFixed(packageBalanceAmount, 2)}` }}
+                {{ isApiKeyWallet ? t('ui.notApplicable') : `$${formatFixed(packageBalanceAmount, 2)}` }}
               </div>
               <div
                 v-if="dailyQuota?.has_active"
                 class="mt-1 text-[11px] text-muted-foreground"
               >
-                已用 ${{ formatFixed(dailyQuota.used_usd, 2) }} / ${{ formatFixed(dailyQuota.total_usd, 2) }}
+                {{ t('ui.used131ab90') }}{{ formatFixed(dailyQuota.used_usd, 2) }} / ${{ formatFixed(dailyQuota.total_usd, 2) }}
               </div>
             </div>
             <div class="rounded-xl bg-background/80 p-3">
               <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-                钱包余额
+                {{ t('ui.walletBalance') }}
               </div>
               <div
                 class="mt-1 text-lg font-semibold"
@@ -87,7 +87,7 @@
             </div>
             <div class="rounded-xl bg-background/80 p-3">
               <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-                充值余额
+                {{ t('ui.topUpBalance') }}
               </div>
               <div class="mt-1 text-lg font-semibold text-foreground">
                 ${{ formatFixed(localWallet.recharge_balance, 2) }}
@@ -95,15 +95,15 @@
             </div>
             <div class="rounded-xl bg-background/80 p-3">
               <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-                赠款余额
+                {{ t('ui.grantBalance') }}
               </div>
               <div class="mt-1 text-lg font-semibold text-foreground">
-                {{ isApiKeyWallet ? '不支持' : `$${formatFixed(localWallet.gift_balance, 2)}` }}
+                {{ isApiKeyWallet ? t('ui.notSupported') : `$${formatFixed(localWallet.gift_balance, 2)}` }}
               </div>
             </div>
             <div class="rounded-xl bg-background/80 p-3">
               <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-                累计消费
+                {{ t('ui.cumulativeSpending') }}
               </div>
               <div class="mt-1 text-lg font-semibold text-foreground">
                 ${{ formatFixed(localWallet.total_consumed, 2) }}
@@ -114,23 +114,23 @@
             v-if="!isApiKeyWallet"
             class="mt-3 text-xs text-muted-foreground"
           >
-            实际扣费顺序为套餐每日额度、充值余额、赠款余额；套餐额度不通过资金操作调整，请在用户套餐中发放或替换。
+            {{ t('ui.chargesUseTheDailyPlanQuotaFirstThenTheTop') }}
           </p>
         </div>
 
         <Tabs v-model="activeTab">
           <TabsList :class="tabsListClass">
             <TabsTrigger value="actions">
-              资金操作
+              {{ t('ui.walletOperation') }}
             </TabsTrigger>
             <TabsTrigger value="transactions">
-              资金流水
+              {{ t('ui.walletLedger') }}
             </TabsTrigger>
             <TabsTrigger
               v-if="showRefunds"
               value="refunds"
             >
-              退款审批
+              {{ t('ui.refundApprovals') }}
             </TabsTrigger>
           </TabsList>
 
@@ -142,19 +142,17 @@
               v-if="!isApiKeyWallet"
               class="space-y-2"
             >
-              <Label class="text-sm font-medium">
-                操作类型
-              </Label>
+              <Label class="text-sm font-medium"> {{ t('ui.operationType') }} </Label>
               <Select v-model="moneyActionType">
                 <SelectTrigger class="h-11">
-                  <SelectValue placeholder="选择操作类型" />
+                  <SelectValue :placeholder="t('ui.selectOperationType')" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="recharge">
-                    人工充值
+                    {{ t('ui.manualTopUp') }}
                   </SelectItem>
                   <SelectItem value="adjust">
-                    人工调账
+                    {{ t('ui.manualAdjustment') }}
                   </SelectItem>
                 </SelectContent>
               </Select>
@@ -164,21 +162,21 @@
               <Label
                 for="wallet-action-amount"
                 class="text-sm font-medium"
-              >金额 (USD)</Label>
+              >{{ t('ui.amountUsd') }}</Label>
               <Input
                 id="wallet-action-amount"
                 :model-value="actionAmount ?? ''"
                 type="number"
                 step="0.01"
-                :placeholder="isApiKeyWallet || moneyActionType === 'adjust' ? '正数为入账，负数为调账扣减' : '输入正数金额'"
+                :placeholder="isApiKeyWallet || moneyActionType === 'adjust' ? t('ui.positiveAmountsAddFundsNegativeAmountsDeductFundsAsAn') : t('ui.enterAPositiveAmount')"
                 class="h-11"
                 @update:model-value="(value) => actionAmount = parseNumberInput(value, { allowFloat: true })"
               />
               <p class="text-xs text-muted-foreground">
                 {{
                   isApiKeyWallet || moneyActionType === 'adjust'
-                    ? '调账扣减会先扣所选账户，不足自动扣另一账户，剩余计入充值余额。'
-                    : '人工充值仅接受正数。'
+                    ? t('ui.adjustmentDeductionsUseTheSelectedAccountFirstThenTheOther')
+                    : t('ui.manualTopUpsOnlyAcceptPositiveAmounts')
                 }}
               </p>
             </div>
@@ -187,12 +185,12 @@
               <Label
                 for="wallet-action-description"
                 class="text-sm font-medium"
-              >说明</Label>
+              >{{ t('ui.description') }}</Label>
               <Input
                 id="wallet-action-description"
                 v-model="actionDescription"
                 type="text"
-                placeholder="填写备注，便于财务追溯"
+                :placeholder="t('ui.addANoteForFinancialTracking')"
                 class="h-11"
               />
             </div>
@@ -201,22 +199,20 @@
               v-if="moneyActionType === 'adjust' && !isApiKeyWallet"
               class="space-y-2"
             >
-              <Label class="text-sm font-medium">
-                调账账户
-              </Label>
+              <Label class="text-sm font-medium"> {{ t('ui.adjustmentAccount') }} </Label>
               <Select v-model="adjustBalanceType">
                 <SelectTrigger class="h-11">
-                  <SelectValue placeholder="选择调账账户" />
+                  <SelectValue :placeholder="t('ui.selectAdjustmentAccount')" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="recharge">
-                    充值余额（可退款）
+                    {{ t('ui.topUpBalanceRefundable') }}
                   </SelectItem>
                   <SelectItem
                     v-if="!isApiKeyWallet"
                     value="gift"
                   >
-                    赠款余额（不可退款）
+                    {{ t('ui.giftCreditNonRefundable') }}
                   </SelectItem>
                 </SelectContent>
               </Select>
@@ -226,7 +222,7 @@
               v-if="!isApiKeyWallet"
               class="rounded-xl border border-border/60 p-3 text-xs text-muted-foreground"
             >
-              人工充值等同于用户充值余额，会产生充值订单和记录；调帐为后台调整，无充值订单。赠款余额不可退款。
+              {{ t('ui.manualTopUpsAddToTheUserSTopUp') }}
             </div>
 
             <div class="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
@@ -235,14 +231,14 @@
                 class="h-10 px-5"
                 @click="handleClose"
               >
-                关闭
+                {{ t('ui.close') }}
               </Button>
               <Button
                 class="h-10 px-5"
                 :disabled="submitMoneyDisabled"
                 @click="submitMoneyAction"
               >
-                {{ submittingMoneyAction ? '处理中...' : submitMoneyLabel }}
+                {{ submittingMoneyAction ? t('ui.processingc1fd812') : submitMoneyLabel }}
               </Button>
             </div>
           </TabsContent>
@@ -253,7 +249,7 @@
           >
             <div class="flex items-center justify-between gap-3">
               <div class="text-sm text-muted-foreground">
-                共 {{ txTotal }} 条
+                {{ t('ui.total76e547a') }} {{ txTotal }} {{ t('ui.itemsf004f1d') }}
               </div>
               <RefreshButton
                 :loading="loadingTx"
@@ -282,7 +278,7 @@
           >
             <div class="flex items-center justify-between gap-3">
               <div class="text-sm text-muted-foreground">
-                共 {{ refundTotal }} 条
+                {{ t('ui.total76e547a') }} {{ refundTotal }} {{ t('ui.itemsf004f1d') }}
               </div>
               <RefreshButton
                 :loading="loadingRefunds"
@@ -295,24 +291,24 @@
               class="rounded-xl border border-border/60 p-4 space-y-3"
             >
               <div class="text-sm font-semibold">
-                {{ refundActionType === 'fail' ? '驳回退款' : '完成退款' }} - {{ actionRefund.refund_no }}
+                {{ refundActionType === 'fail' ? t('ui.rejectRefund') : t('ui.completeRefund') }} - {{ actionRefund.refund_no }}
               </div>
               <template v-if="refundActionType === 'fail'">
                 <div class="space-y-1.5">
-                  <Label>驳回原因</Label>
+                  <Label>{{ t('ui.rejectionReason') }}</Label>
                   <Input
                     v-model="refundFailReason"
-                    placeholder="请填写驳回原因"
+                    :placeholder="t('ui.enterAReasonForRejection')"
                   />
                 </div>
               </template>
               <template v-else>
                 <div class="space-y-1.5">
-                  <Label>网关退款号（可选）</Label>
+                  <Label>{{ t('ui.gatewayRefundIdOptional') }}</Label>
                   <Input v-model="refundGatewayRefundId" />
                 </div>
                 <div class="space-y-1.5">
-                  <Label>打款凭证 / 参考号（可选）</Label>
+                  <Label>{{ t('ui.transferReceiptReferenceNumberOptional') }}</Label>
                   <Input v-model="refundPayoutReference" />
                 </div>
               </template>
@@ -321,7 +317,7 @@
                   variant="outline"
                   @click="resetRefundActionForm"
                 >
-                  取消
+                  {{ t('common.cancel') }}
                 </Button>
                 <Button
                   v-if="refundActionType === 'fail'"
@@ -329,14 +325,14 @@
                   :disabled="submittingRefundAction"
                   @click="submitFailRefund"
                 >
-                  {{ submittingRefundAction ? '提交中...' : '确认驳回' }}
+                  {{ submittingRefundAction ? t('ui.submitting') : t('ui.confirmRejection') }}
                 </Button>
                 <Button
                   v-else
                   :disabled="submittingRefundAction"
                   @click="submitCompleteRefund"
                 >
-                  {{ submittingRefundAction ? '提交中...' : '确认完成' }}
+                  {{ submittingRefundAction ? t('ui.submitting') : t('ui.confirmCompletion') }}
                 </Button>
               </div>
             </div>
@@ -346,13 +342,13 @@
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>退款单号</TableHead>
-                      <TableHead>金额</TableHead>
-                      <TableHead>模式</TableHead>
-                      <TableHead>状态</TableHead>
-                      <TableHead>原因</TableHead>
+                      <TableHead>{{ t('ui.refundId') }}</TableHead>
+                      <TableHead>{{ t('ui.amount') }}</TableHead>
+                      <TableHead>{{ t('ui.mode') }}</TableHead>
+                      <TableHead>{{ t('ui.status6320b4a') }}</TableHead>
+                      <TableHead>{{ t('ui.reasonf029d9c') }}</TableHead>
                       <TableHead class="text-right">
-                        操作
+                        {{ t('ui.actionsed31fbb') }}
                       </TableHead>
                     </TableRow>
                   </TableHeader>
@@ -387,7 +383,7 @@
                             :disabled="submittingRefundAction"
                             @click="processRefund(refund)"
                           >
-                            处理
+                            {{ t('ui.processing') }}
                           </Button>
                           <Button
                             v-if="canCompleteRefund(refund.status)"
@@ -395,7 +391,7 @@
                             :disabled="submittingRefundAction"
                             @click="openCompleteRefund(refund)"
                           >
-                            完成
+                            {{ t('ui.completed') }}
                           </Button>
                           <Button
                             v-if="canFailRefund(refund)"
@@ -404,7 +400,7 @@
                             :disabled="submittingRefundAction"
                             @click="openFailRefund(refund)"
                           >
-                            驳回
+                            {{ t('ui.reject') }}
                           </Button>
                         </div>
                       </TableCell>
@@ -415,8 +411,8 @@
                         class="py-10"
                       >
                         <EmptyState
-                          title="暂无退款申请"
-                          description="当前钱包没有退款单"
+                          :title="t('ui.noRefundRequests')"
+                          :description="t('ui.noRefundRequestsForThisWallet')"
                         />
                       </TableCell>
                     </TableRow>
@@ -445,6 +441,8 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+
 import RefundReferralReview from '@/features/wallet/components/RefundReferralReview.vue'
 import { computed, ref, watch } from 'vue'
 import {
@@ -506,7 +504,7 @@ const props = withDefaults(
   {
     ownerName: '',
     ownerSubtitle: '',
-    contextLabel: '钱包详情',
+    contextLabel: undefined,
     accent: 'emerald',
     showRefunds: true,
   }
@@ -516,6 +514,8 @@ const emit = defineEmits<{
   close: []
   changed: []
 }>()
+
+const { t } = useI18n()
 
 const referralReview = ref<InstanceType<typeof RefundReferralReview> | null>(null)
 
@@ -583,8 +583,8 @@ const submitMoneyDisabled = computed(() => {
   return actionAmount.value === 0
 })
 const submitMoneyLabel = computed(() => {
-  if (isApiKeyWallet.value) return '确认调账'
-  return moneyActionType.value === 'recharge' ? '确认充值' : '确认调账'
+  if (isApiKeyWallet.value) return t('ui.confirmAdjustment')
+  return moneyActionType.value === 'recharge' ? t('ui.confirmTopUp') : t('ui.confirmAdjustment')
 })
 
 watch(
@@ -654,7 +654,7 @@ async function loadTransactions() {
     txTotal.value = resp.total
   } catch (err) {
     log.error('加载钱包流水失败:', err)
-    error(parseApiError(err, '加载钱包流水失败'))
+    error(parseApiError(err, t('ui.failedToLoadWalletTransactions')))
   } finally {
     loadingTx.value = false
   }
@@ -732,9 +732,9 @@ async function submitRecharge() {
   const totalBefore = localWallet.value.balance
   const totalAfter = totalBefore + actionAmount.value
   const confirmed = await confirm({
-    title: '确认人工充值',
+    get title() { return t('ui.confirmManualTopUp') },
     message: `将为 ${props.ownerName || '该钱包'} 充值 **$${formatFixed(actionAmount.value, 4)}**\n该账户**充值余额**将从 **$${formatFixed(rechargeBefore, 4)}** 变为 **$${formatFixed(rechargeAfter, 4)}**，**钱包余额**将从 **$${formatFixed(totalBefore, 4)}** 变为 **$${formatFixed(totalAfter, 4)}**`,
-    confirmText: '确认充值',
+    get confirmText() { return t('ui.confirmTopUp') },
     variant: 'warning',
   })
   if (!confirmed) return
@@ -840,7 +840,7 @@ async function submitAdjust() {
   const confirmed = await confirm({
     title: '确认钱包调账',
     message: `将对 ${props.ownerName || '该钱包'} 的**${balanceTypeLabel}**${actionAmount.value > 0 ? '增加' : '扣减'} **$${formatFixed(Math.abs(actionAmount.value), 4)}**\n${detailLine}，**钱包余额**将从 **$${formatFixed(totalBefore, 4)}** 变为 **$${formatFixed(totalAfter, 4)}**`,
-    confirmText: '确认调账',
+    get confirmText() { return t('ui.confirmAdjustment') },
     variant: 'warning',
   })
   if (!confirmed) return
@@ -885,7 +885,7 @@ async function processRefund(refund: RefundRequest) {
     if (review?.decision !== 'approve') return
     const resp = await adminWalletApi.processRefund(walletId, refundId, { referral_shortfall_confirmation: review.token })
     localWallet.value = resp.wallet
-    success('退款已进入 processing')
+    success(t('ui.refundIsNowProcessing'))
     await refreshDrawerData()
     emit('changed')
   } catch (err) {
@@ -912,7 +912,7 @@ function openCompleteRefund(refund: RefundRequest) {
 async function submitFailRefund() {
   if (!localWallet.value || !actionRefund.value) return
   if (!refundFailReason.value.trim()) {
-    error('请填写驳回原因')
+    error(t('ui.enterAReasonForRejection'))
     return
   }
 
@@ -922,7 +922,7 @@ async function submitFailRefund() {
       reason: refundFailReason.value.trim(),
     })
     localWallet.value = resp.wallet
-    success('退款已驳回')
+    success(t('ui.refundRejected'))
     resetRefundActionForm()
     await refreshDrawerData()
     emit('changed')
@@ -956,7 +956,7 @@ async function submitCompleteRefund() {
     })
     success(response.referral_reversal
       ? `退款已完成；该订单累计冲回 $${response.referral_reversal.reversed_amount_usd.toFixed(2)}，当前待冲回 $${response.referral_reversal.pending_reversal_amount_usd.toFixed(2)}`
-      : '退款已完成')
+      : t('ui.refundCompleted'))
     resetRefundActionForm()
     await refreshDrawerData()
     emit('changed')
@@ -976,5 +976,7 @@ function toFiniteNumber(value: unknown, fallback = 0): number {
 function formatFixed(value: unknown, digits: number): string {
   return toFiniteNumber(value).toFixed(digits)
 }
+
+const contextLabel = computed(() => props.contextLabel ?? t('ui.walletDetails'))
 </script>
 

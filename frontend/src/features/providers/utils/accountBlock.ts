@@ -1,3 +1,5 @@
+
+import { translate as t } from '@/i18n'
 // -- 按原因细分的关键词组 --
 
 // 封禁类 (suspended / banned)
@@ -108,16 +110,16 @@ export function isAccountLevelBlockReason(reason: string | null | undefined): bo
 export function classifyAccountBlockLabel(reason: string): string {
   const detail = normalizeOAuthReasonDetail(reason) || reason
   if (reason.trim().startsWith('[OAUTH_EXPIRED]')) {
-    return isHardTokenInvalidReason(detail) ? 'Token 失效' : 'Token 过期'
+    return isHardTokenInvalidReason(detail) ? t('ui.invalidToken') : t('ui.expiredToken')
   }
   const lowered = detail.toLowerCase()
-  if (isHardTokenInvalidReason(detail)) return 'Token 失效'
-  if (isTokenExpiredReason(detail)) return 'Token 过期'
-  if (KEYWORDS_VERIFICATION.some(kw => lowered.includes(kw))) return '需要验证'
-  if (lowered.includes('deactivated_workspace')) return '工作区停用'
-  if (KEYWORDS_DISABLED.some(kw => lowered.includes(kw))) return '账号停用'
-  if (KEYWORDS_SUSPENDED.some(kw => lowered.includes(kw))) return '账号封禁'
-  return '账号异常'
+  if (isHardTokenInvalidReason(detail)) return t('ui.invalidToken')
+  if (isTokenExpiredReason(detail)) return t('ui.expiredToken')
+  if (KEYWORDS_VERIFICATION.some(kw => lowered.includes(kw))) return t('ui.verificationRequired')
+  if (lowered.includes('deactivated_workspace')) return t('ui.workspaceDisabled')
+  if (KEYWORDS_DISABLED.some(kw => lowered.includes(kw))) return t('ui.accountDisabled')
+  if (KEYWORDS_SUSPENDED.some(kw => lowered.includes(kw))) return t('ui.accountBanned')
+  return t('ui.accountIssue')
 }
 
 export function cleanAccountBlockReason(reason: string): string {

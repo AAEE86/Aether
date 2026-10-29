@@ -1,3 +1,4 @@
+import { translate } from '@/i18n'
 import { ref, computed } from 'vue'
 import { useToast } from '@/composables/useToast'
 import { adminApi } from '@/api/admin'
@@ -318,7 +319,7 @@ export function useSystemConfig() {
       systemConfig.value = nextConfig
       originalConfig.value = JSON.parse(JSON.stringify(nextConfig))
     } catch (err) {
-      error('加载系统配置失败')
+      error(translate('ui.failedToLoadSystemConfiguration'))
       log.error('加载系统配置失败:', err)
     } finally {
       systemConfigLoading.value = false
@@ -356,9 +357,9 @@ export function useSystemConfig() {
         originalConfig.value.site_subtitle = systemConfig.value.site_subtitle
       }
       await refreshSiteInfo()
-      success('站点信息已保存')
+      success(translate('ui.siteInformationSaved'))
     } catch (err) {
-      error('保存站点信息失败')
+      error(translate('ui.failedToSaveSiteInformation'))
       log.error('保存站点信息失败:', err)
     } finally {
       siteInfoLoading.value = false
@@ -376,9 +377,9 @@ export function useSystemConfig() {
       if (originalConfig.value) {
         originalConfig.value.system_proxy_node_id = systemConfig.value.system_proxy_node_id
       }
-      success('网络代理配置已保存')
+      success(translate('ui.networkProxyConfigurationSaved'))
     } catch (err) {
-      error('保存代理配置失败')
+      error(translate('ui.failedToSaveProxyConfiguration'))
       log.error('保存代理配置失败:', err)
     } finally {
       proxyConfigLoading.value = false
@@ -518,9 +519,9 @@ export function useSystemConfig() {
         originalConfig.value.enable_format_conversion =
           systemConfig.value.enable_format_conversion
       }
-      success('基础配置已保存')
+      success(translate('ui.basicConfigurationSaved'))
     } catch (err) {
-      error(parseApiError(err, '保存配置失败'))
+      error(parseApiError(err, translate('ui.failedToSaveConfiguration')))
       log.error('保存基础配置失败:', err)
     } finally {
       basicConfigLoading.value = false
@@ -541,9 +542,9 @@ export function useSystemConfig() {
         originalConfig.value.turnstile_secret_key = ''
         originalConfig.value.turnstile_secret_key_is_set = false
       }
-      success('Turnstile 密钥已清空')
+      success(translate('ui.turnstileSecretKeyCleared'))
     } catch (err) {
-      error('清空 Turnstile 密钥失败')
+      error(translate('ui.failedToClearTurnstileSecretKey'))
       log.error('清空 Turnstile 密钥失败:', err)
     } finally {
       basicConfigLoading.value = false
@@ -589,9 +590,9 @@ export function useSystemConfig() {
         originalConfig.value.request_record_max_body_size_kb =
           systemConfig.value.request_record_max_body_size_kb
       }
-      success('请求记录配置已保存')
+      success(translate('ui.requestLoggingConfigurationSaved'))
     } catch (err) {
-      error('保存配置失败')
+      error(translate('ui.failedToSaveConfiguration'))
       log.error('保存请求记录配置失败:', err)
     } finally {
       logConfigLoading.value = false
@@ -685,9 +686,9 @@ export function useSystemConfig() {
         originalConfig.value.proxy_node_metrics_cleanup_batch_size =
           systemConfig.value.proxy_node_metrics_cleanup_batch_size
       }
-      success('请求记录清理配置已保存')
+      success(translate('ui.requestLogCleanupConfigurationSaved'))
     } catch (err) {
-      error('保存配置失败')
+      error(translate('ui.failedToSaveConfiguration'))
       log.error('保存请求记录清理配置失败:', err)
     } finally {
       cleanupConfigLoading.value = false
@@ -703,9 +704,9 @@ export function useSystemConfig() {
         enabled,
         '是否启用自动清理任务'
       )
-      success(enabled ? '已启用自动清理' : '已禁用自动清理')
+      success(enabled ? translate('ui.automaticCleanupEnabled') : translate('ui.automaticCleanupDisabled'))
     } catch (err) {
-      error('保存配置失败')
+      error(translate('ui.failedToSaveConfiguration'))
       log.error('保存自动清理配置失败:', err)
       systemConfig.value.enable_auto_cleanup = previousValue
     }

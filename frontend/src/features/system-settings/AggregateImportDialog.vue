@@ -2,8 +2,8 @@
   <!-- 完整备份导入对话框 -->
   <Dialog
     :open="aggregateImportDialogOpen"
-    title="导入完整备份"
-    description="选择冲突处理模式并确认导入"
+    :title="t('ui.importFullBackup')"
+    :description="t('ui.chooseHowToHandleConflictsAndConfirmTheImport')"
     @update:open="$emit('update:aggregateImportDialogOpen', $event)"
   >
     <div class="space-y-4">
@@ -12,38 +12,38 @@
         class="text-sm"
       >
         <p class="font-medium mb-2">
-          完整备份预览
+          {{ t('ui.fullBackupPreview') }}
         </p>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 text-muted-foreground">
           <div>
             <p class="font-medium text-foreground mb-1">
-              配置数据
+              {{ t('ui.configurationData') }}
             </p>
             <ul class="space-y-1">
-              <li>全局模型: {{ aggregateImportPreview.config_data.global_models?.length || 0 }} 个</li>
-              <li>提供商: {{ aggregateImportPreview.config_data.providers?.length || 0 }} 个</li>
+              <li>{{ t('ui.globalModels') }} {{ aggregateImportPreview.config_data.global_models?.length || 0 }} {{ t('ui.items3a11681') }}</li>
+              <li>{{ t('ui.providers') }} {{ aggregateImportPreview.config_data.providers?.length || 0 }} {{ t('ui.items3a11681') }}</li>
               <li>
-                API Keys: {{ aggregateImportPreview.config_data.providers?.reduce((sum: number, p: { api_keys?: unknown[] }) => sum + (p.api_keys?.length || 0), 0) }} 个
+                API Keys: {{ aggregateImportPreview.config_data.providers?.reduce((sum: number, p: { api_keys?: unknown[] }) => sum + (p.api_keys?.length || 0), 0) }} {{ t('ui.items3a11681') }}
               </li>
             </ul>
           </div>
           <div>
             <p class="font-medium text-foreground mb-1">
-              用户数据
+              {{ t('ui.userData') }}
             </p>
             <ul class="space-y-1">
               <li v-if="aggregateImportPreview.user_data.user_groups?.length">
-                用户组: {{ aggregateImportPreview.user_data.user_groups.length }} 个
+                {{ t('ui.userGroups') }} {{ aggregateImportPreview.user_data.user_groups.length }} {{ t('ui.items3a11681') }}
               </li>
-              <li>用户: {{ aggregateImportPreview.user_data.users?.length || 0 }} 个</li>
+              <li>{{ t('ui.users') }} {{ aggregateImportPreview.user_data.users?.length || 0 }} {{ t('ui.items3a11681') }}</li>
               <li>
-                API Keys: {{ aggregateImportPreview.user_data.users?.reduce((sum: number, u: { api_keys?: unknown[] }) => sum + (u.api_keys?.length || 0), 0) }} 个
+                API Keys: {{ aggregateImportPreview.user_data.users?.reduce((sum: number, u: { api_keys?: unknown[] }) => sum + (u.api_keys?.length || 0), 0) }} {{ t('ui.items3a11681') }}
               </li>
               <li v-if="aggregateImportPreview.user_data.standalone_keys?.length">
-                独立余额 Keys: {{ aggregateImportPreview.user_data.standalone_keys.length }} 个
+                {{ t('ui.standaloneBalanceKeys') }} {{ aggregateImportPreview.user_data.standalone_keys.length }} {{ t('ui.items3a11681') }}
               </li>
               <li v-if="usageAggregatePreviewCounts.total > 0">
-                统计聚合: {{ usageAggregatePreviewCounts.total }} 行
+                {{ t('ui.aggregatedStatistics') }} {{ usageAggregatePreviewCounts.total }} {{ t('ui.rows') }}
               </li>
             </ul>
           </div>
@@ -51,7 +51,7 @@
       </div>
 
       <div>
-        <Label class="block text-sm font-medium mb-2">冲突处理模式</Label>
+        <Label class="block text-sm font-medium mb-2">{{ t('ui.conflictHandling') }}</Label>
         <Select
           :model-value="aggregateMergeMode"
           :open="aggregateMergeModeSelectOpen"
@@ -63,31 +63,31 @@
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="skip">
-              跳过 - 保留现有数据
+              {{ t('ui.skipAndKeepExistingData') }}
             </SelectItem>
             <SelectItem value="overwrite">
-              覆盖 - 用导入数据替换
+              {{ t('ui.overwriteWithImportedData') }}
             </SelectItem>
             <SelectItem value="error">
-              报错 - 遇到冲突时中止
+              {{ t('ui.abortIfAConflictIsFound') }}
             </SelectItem>
           </SelectContent>
         </Select>
         <p class="mt-1 text-xs text-muted-foreground">
           <template v-if="aggregateMergeMode === 'skip'">
-            已存在的数据将被保留，仅导入新数据
+            {{ t('ui.keepExistingDataAndImportOnlyNewEntries') }}
           </template>
           <template v-else-if="aggregateMergeMode === 'overwrite'">
-            已存在的数据将被导入内容覆盖
+            {{ t('ui.replaceExistingDataWithImportedData') }}
           </template>
           <template v-else>
-            如果发现任何冲突，导入将中止
+            {{ t('ui.stopTheImportIfAConflictIsFound') }}
           </template>
         </p>
       </div>
 
       <p class="text-xs text-muted-foreground">
-        注意：完整备份会先导入配置数据，再导入用户数据。用户密码及用户和独立余额 API Key 凭据不会导出或恢复；仅保留账户、Key 元数据、用量、钱包快照与统计聚合。导入后的这些 Keys 默认禁用，需重置用户密码并重新签发 Keys 后再使用。
+        {{ t('ui.configurationIsImportedBeforeUserDataPasswordsAndUserOr') }}
       </p>
 
       <div
@@ -112,13 +112,13 @@
         variant="outline"
         @click="$emit('update:aggregateImportDialogOpen', false); $emit('update:aggregateMergeModeSelectOpen', false)"
       >
-        取消
+        {{ t('common.cancel') }}
       </Button>
       <Button
         :disabled="importAggregateLoading"
         @click="$emit('confirm')"
       >
-        {{ importAggregateLoading ? '导入中...' : '确认导入' }}
+        {{ importAggregateLoading ? t('ui.importingc70b341') : t('ui.confirmImport') }}
       </Button>
     </template>
   </Dialog>
@@ -126,7 +126,7 @@
   <!-- 完整备份导入结果对话框 -->
   <Dialog
     :open="aggregateImportResultDialogOpen"
-    title="完整备份导入完成"
+    :title="t('ui.fullBackupImported')"
     @update:open="$emit('update:aggregateImportResultDialogOpen', $event)"
   >
     <div
@@ -136,24 +136,19 @@
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
         <div>
           <p class="font-medium">
-            配置数据
+            {{ t('ui.configurationData') }}
           </p>
           <p class="text-muted-foreground">
-            全局模型创建 {{ aggregateImportResult.config.stats.global_models.created }}，
-            提供商创建 {{ aggregateImportResult.config.stats.providers.created }}，
-            API Keys 创建 {{ aggregateImportResult.config.stats.keys.created }}
+            {{ t('ui.globalModelsCreated') }} {{ aggregateImportResult.config.stats.global_models.created }}{{ t('ui.providersCreated') }} {{ aggregateImportResult.config.stats.providers.created }}{{ t('ui.apiKeysCreated') }} {{ aggregateImportResult.config.stats.keys.created }}
           </p>
         </div>
         <div>
           <p class="font-medium">
-            用户数据
+            {{ t('ui.userData') }}
           </p>
           <p class="text-muted-foreground">
-            用户创建 {{ aggregateImportResult.users.stats.users.created }}，
-            API Keys 创建 {{ aggregateImportResult.users.stats.api_keys.created }}，
-            跳过 {{ aggregateImportResult.users.stats.users.skipped }} 个用户
-            <template v-if="usageAggregateResultText">
-              ，统计聚合 {{ usageAggregateResultText }}
+            {{ t('ui.usersCreated') }} {{ aggregateImportResult.users.stats.users.created }}{{ t('ui.apiKeysCreated') }} {{ aggregateImportResult.users.stats.api_keys.created }}{{ t('ui.skippedd5f7caa') }} {{ aggregateImportResult.users.stats.users.skipped }} {{ t('ui.users459fab8') }} <template v-if="usageAggregateResultText">
+              {{ t('ui.aggregatedStatisticsf4c3024') }} {{ usageAggregateResultText }}
             </template>
           </p>
         </div>
@@ -164,7 +159,7 @@
         class="p-3 bg-destructive/10 rounded-lg"
       >
         <p class="font-medium text-destructive mb-2">
-          警告信息
+          {{ t('ui.warnings') }}
         </p>
         <ul class="text-sm text-destructive space-y-1">
           <li
@@ -179,25 +174,14 @@
 
     <template #footer>
       <Button @click="$emit('update:aggregateImportResultDialogOpen', false)">
-        确定
+        {{ t('ui.confirmfac2a67') }}
       </Button>
     </template>
   </Dialog>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
-import Button from '@/components/ui/button.vue'
-import Label from '@/components/ui/label.vue'
-import Select from '@/components/ui/select.vue'
-import SelectTrigger from '@/components/ui/select-trigger.vue'
-import SelectValue from '@/components/ui/select-value.vue'
-import SelectContent from '@/components/ui/select-content.vue'
-import SelectItem from '@/components/ui/select-item.vue'
-import { Dialog } from '@/components/ui'
-import type { AggregateExportData, AggregateImportResponse } from '@/api/admin'
-import type { ImportProgressState } from './composables/useConfigExportImport'
-
+import { useI18n } from '@/i18n'
 const props = defineProps<{
   aggregateImportDialogOpen: boolean
   aggregateImportResultDialogOpen: boolean
@@ -217,10 +201,24 @@ defineEmits<{
   'update:aggregateMergeModeSelectOpen': [value: boolean]
 }>()
 
+const { t } = useI18n()
+
+import { computed } from 'vue'
+import Button from '@/components/ui/button.vue'
+import Label from '@/components/ui/label.vue'
+import Select from '@/components/ui/select.vue'
+import SelectTrigger from '@/components/ui/select-trigger.vue'
+import SelectValue from '@/components/ui/select-value.vue'
+import SelectContent from '@/components/ui/select-content.vue'
+import SelectItem from '@/components/ui/select-item.vue'
+import { Dialog } from '@/components/ui'
+import type { AggregateExportData, AggregateImportResponse } from '@/api/admin'
+import type { ImportProgressState } from './composables/useConfigExportImport'
+
 const warningMessages = computed(() => {
   if (!props.aggregateImportResult) return []
-  const configErrors = props.aggregateImportResult.config.stats.errors.map((message) => `配置数据: ${message}`)
-  const userErrors = props.aggregateImportResult.users.stats.errors.map((message) => `用户数据: ${message}`)
+  const configErrors = props.aggregateImportResult.config.stats.errors.map((message) => t('settings.import.configurationError', { message }))
+  const userErrors = props.aggregateImportResult.users.stats.errors.map((message) => t('settings.import.userError', { message }))
   return [...configErrors, ...userErrors]
 })
 
@@ -253,6 +251,7 @@ const usageAggregateResultText = computed(() => {
   const total = created + updated + skipped
   if (total === 0) return ''
 
-  return `创建 ${created}，更新 ${updated}，跳过 ${skipped}`
+  return t('settings.import.counts', { created, updated, skipped })
 })
+
 </script>

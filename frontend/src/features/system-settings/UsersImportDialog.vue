@@ -2,8 +2,8 @@
   <!-- 用户数据导入对话框 -->
   <Dialog
     :open="importUsersDialogOpen"
-    title="导入用户数据"
-    description="选择冲突处理模式并确认导入"
+    :title="t('ui.importUserData')"
+    :description="t('ui.chooseHowToHandleConflictsAndConfirmTheImport')"
     @update:open="$emit('update:importUsersDialogOpen', $event)"
   >
     <div class="space-y-4">
@@ -12,24 +12,24 @@
         class="text-sm"
       >
         <p class="font-medium mb-2">
-          数据预览
+          {{ t('ui.dataPreview') }}
         </p>
         <ul class="space-y-1 text-muted-foreground">
           <li v-if="importUsersPreview.user_groups?.length">
-            用户组: {{ importUsersPreview.user_groups.length }} 个
+            {{ t('ui.userGroups') }} {{ importUsersPreview.user_groups.length }} {{ t('ui.items3a11681') }}
           </li>
-          <li>用户: {{ importUsersPreview.users?.length || 0 }} 个</li>
+          <li>{{ t('ui.users') }} {{ importUsersPreview.users?.length || 0 }} {{ t('ui.items3a11681') }}</li>
           <li>
-            API Keys: {{ importUsersPreview.users?.reduce((sum: number, u: { api_keys?: unknown[] }) => sum + (u.api_keys?.length || 0), 0) }} 个
+            API Keys: {{ importUsersPreview.users?.reduce((sum: number, u: { api_keys?: unknown[] }) => sum + (u.api_keys?.length || 0), 0) }} {{ t('ui.items3a11681') }}
           </li>
           <li v-if="importUsersPreview.standalone_keys?.length">
-            独立余额 Keys: {{ importUsersPreview.standalone_keys.length }} 个
+            {{ t('ui.standaloneBalanceKeys') }} {{ importUsersPreview.standalone_keys.length }} {{ t('ui.items3a11681') }}
           </li>
         </ul>
       </div>
 
       <div>
-        <Label class="block text-sm font-medium mb-2">冲突处理模式</Label>
+        <Label class="block text-sm font-medium mb-2">{{ t('ui.conflictHandling') }}</Label>
         <Select
           :model-value="usersMergeMode"
           :open="usersMergeModeSelectOpen"
@@ -41,31 +41,31 @@
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="skip">
-              跳过 - 保留现有用户
+              {{ t('ui.skipAndKeepExistingUsers') }}
             </SelectItem>
             <SelectItem value="overwrite">
-              覆盖 - 用导入数据替换
+              {{ t('ui.overwriteWithImportedData') }}
             </SelectItem>
             <SelectItem value="error">
-              报错 - 遇到冲突时中止
+              {{ t('ui.abortIfAConflictIsFound') }}
             </SelectItem>
           </SelectContent>
         </Select>
         <p class="mt-1 text-xs text-muted-foreground">
           <template v-if="usersMergeMode === 'skip'">
-            已存在的用户将被保留，仅导入新用户
+            {{ t('ui.keepExistingUsersAndImportOnlyNewUsers') }}
           </template>
           <template v-else-if="usersMergeMode === 'overwrite'">
-            已存在的用户将被导入的数据覆盖
+            {{ t('ui.replaceExistingUserDataWithImportedData') }}
           </template>
           <template v-else>
-            如果发现任何冲突，导入将在写入前预检并中止
+            {{ t('ui.conflictsAreCheckedBeforeAnyDataIsWrittenTheImport') }}
           </template>
         </p>
       </div>
 
       <p class="text-xs text-muted-foreground">
-        注意：备份不会导出或恢复用户密码及 API Key 凭据。导入仅恢复账户、Key 元数据、用量与钱包数据；导入后的用户和独立余额 API Keys 默认禁用，需重置用户密码并重新签发 Keys 后再使用。
+        {{ t('ui.backupsDoNotExportOrRestorePasswordsOrApiKey') }}
       </p>
 
       <div
@@ -90,13 +90,13 @@
         variant="outline"
         @click="$emit('update:importUsersDialogOpen', false); $emit('update:usersMergeModeSelectOpen', false)"
       >
-        取消
+        {{ t('common.cancel') }}
       </Button>
       <Button
         :disabled="importUsersLoading"
         @click="$emit('confirm')"
       >
-        {{ importUsersLoading ? '导入中...' : '确认导入' }}
+        {{ importUsersLoading ? t('ui.importingc70b341') : t('ui.confirmImport') }}
       </Button>
     </template>
   </Dialog>
@@ -104,7 +104,7 @@
   <!-- 用户数据导入结果对话框 -->
   <Dialog
     :open="importUsersResultDialogOpen"
-    title="用户数据导入完成"
+    :title="t('ui.userDataImported')"
     @update:open="$emit('update:importUsersResultDialogOpen', $event)"
   >
     <div
@@ -114,22 +114,18 @@
       <div class="grid grid-cols-2 gap-4 text-sm">
         <div v-if="importUsersResult.stats.user_groups">
           <p class="font-medium">
-            用户组
+            {{ t('ui.userGroups963ead0') }}
           </p>
           <p class="text-muted-foreground">
-            创建: {{ importUsersResult.stats.user_groups.created }},
-            更新: {{ importUsersResult.stats.user_groups.updated }},
-            跳过: {{ importUsersResult.stats.user_groups.skipped }}
+            {{ t('ui.created64aefde') }} {{ importUsersResult.stats.user_groups.created }}{{ t('ui.updated') }} {{ importUsersResult.stats.user_groups.updated }}{{ t('ui.skipped') }} {{ importUsersResult.stats.user_groups.skipped }}
           </p>
         </div>
         <div>
           <p class="font-medium">
-            用户
+            {{ t('auth.role.user') }}
           </p>
           <p class="text-muted-foreground">
-            创建: {{ importUsersResult.stats.users.created }},
-            更新: {{ importUsersResult.stats.users.updated }},
-            跳过: {{ importUsersResult.stats.users.skipped }}
+            {{ t('ui.created64aefde') }} {{ importUsersResult.stats.users.created }}{{ t('ui.updated') }} {{ importUsersResult.stats.users.updated }}{{ t('ui.skipped') }} {{ importUsersResult.stats.users.skipped }}
           </p>
         </div>
         <div>
@@ -137,8 +133,7 @@
             API Keys
           </p>
           <p class="text-muted-foreground">
-            创建: {{ importUsersResult.stats.api_keys.created }},
-            跳过: {{ importUsersResult.stats.api_keys.skipped }}
+            {{ t('ui.created64aefde') }} {{ importUsersResult.stats.api_keys.created }}{{ t('ui.skipped') }} {{ importUsersResult.stats.api_keys.skipped }}
           </p>
         </div>
         <div
@@ -146,11 +141,10 @@
           class="col-span-2"
         >
           <p class="font-medium">
-            独立余额 Keys
+            {{ t('ui.standaloneBalanceKeysa08a36d') }}
           </p>
           <p class="text-muted-foreground">
-            创建: {{ importUsersResult.stats.standalone_keys.created }},
-            跳过: {{ importUsersResult.stats.standalone_keys.skipped }}
+            {{ t('ui.created64aefde') }} {{ importUsersResult.stats.standalone_keys.created }}{{ t('ui.skipped') }} {{ importUsersResult.stats.standalone_keys.skipped }}
           </p>
         </div>
       </div>
@@ -160,7 +154,7 @@
         class="p-3 bg-destructive/10 rounded-lg"
       >
         <p class="font-medium text-destructive mb-2">
-          警告信息
+          {{ t('ui.warnings') }}
         </p>
         <ul class="text-sm text-destructive space-y-1">
           <li
@@ -175,13 +169,15 @@
 
     <template #footer>
       <Button @click="$emit('update:importUsersResultDialogOpen', false)">
-        确定
+        {{ t('ui.confirmfac2a67') }}
       </Button>
     </template>
   </Dialog>
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+
 import Button from '@/components/ui/button.vue'
 import Label from '@/components/ui/label.vue'
 import Select from '@/components/ui/select.vue'
@@ -211,4 +207,7 @@ defineEmits<{
   'update:usersMergeMode': [value: 'skip' | 'overwrite' | 'error']
   'update:usersMergeModeSelectOpen': [value: boolean]
 }>()
+
+const { t } = useI18n()
+
 </script>

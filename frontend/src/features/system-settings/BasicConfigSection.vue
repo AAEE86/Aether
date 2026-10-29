@@ -1,7 +1,7 @@
 <template>
   <CardSection
-    title="基础配置"
-    description="配置系统默认参数"
+    :title="t('ui.basicConfiguration')"
+    :description="t('ui.configureSystemDefaults')"
   >
     <template #actions>
       <Button
@@ -9,7 +9,7 @@
         :disabled="loading || !hasChanges"
         @click="$emit('save')"
       >
-        {{ loading ? '保存中...' : '保存' }}
+        {{ loading ? t('ui.saving') : t('ui.save') }}
       </Button>
     </template>
     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -17,9 +17,7 @@
         <Label
           for="default-quota"
           class="block text-sm font-medium"
-        >
-          默认用户初始赠款(美元)
-        </Label>
+        > {{ t('ui.defaultUserInitialGrantUsd') }} </Label>
         <Input
           id="default-quota"
           :model-value="defaultUserInitialGiftUsd"
@@ -30,7 +28,7 @@
           @update:model-value="$emit('update:defaultUserInitialGiftUsd', Number($event))"
         />
         <p class="mt-1 text-xs text-muted-foreground">
-          新用户注册时的默认初始赠款
+          {{ t('ui.defaultInitialGrantForNewUsers') }}
         </p>
       </div>
 
@@ -38,9 +36,7 @@
         <Label
           for="rate-limit"
           class="block text-sm font-medium"
-        >
-          默认速率限制 (请求/分钟)
-        </Label>
+        > {{ t('ui.defaultRateLimitRequestsMin') }} </Label>
         <Input
           id="rate-limit"
           :model-value="rateLimitPerMinute"
@@ -50,7 +46,7 @@
           @update:model-value="$emit('update:rateLimitPerMinute', Number($event))"
         />
         <p class="mt-1 text-xs text-muted-foreground">
-          0 表示默认不限制；未单独配置的用户和独立 Key 会跟随这里
+          {{ t('ui.0MeansNoDefaultLimitUsersAndStandaloneKeysWithout') }}
         </p>
       </div>
 
@@ -58,9 +54,7 @@
         <Label
           for="password-policy-level"
           class="block text-sm font-medium mb-2"
-        >
-          密码策略
-        </Label>
+        > {{ t('ui.passwordPolicy') }} </Label>
         <Select
           :model-value="passwordPolicyLevel"
           @update:model-value="$emit('update:passwordPolicyLevel', $event)"
@@ -73,18 +67,18 @@
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="weak">
-              弱密码 - 至少 6 个字符
+              {{ t('ui.weakPasswordAtLeast6Characters') }}
             </SelectItem>
             <SelectItem value="medium">
-              中等密码 - 至少 8 位，含字母和数字
+              {{ t('ui.mediumPasswordAtLeast8CharactersWithLettersAndNumbers') }}
             </SelectItem>
             <SelectItem value="strong">
-              强密码 - 至少 8 位，含大小写字母、数字和特殊字符
+              {{ t('ui.strongPasswordAtLeast8CharactersWithUppercaseLowercaseNumbers') }}
             </SelectItem>
           </SelectContent>
         </Select>
         <p class="mt-1 text-xs text-muted-foreground">
-          影响注册、创建用户、重置/修改密码的校验规则
+          {{ t('ui.affectsValidationRulesForRegistrationUserCreationPasswordResetAnd') }}
         </p>
       </div>
 
@@ -99,11 +93,9 @@
             <Label
               for="enable-registration"
               class="cursor-pointer"
-            >
-              开放用户注册
-            </Label>
+            > {{ t('ui.openUserRegistration') }} </Label>
             <p class="text-xs text-muted-foreground">
-              允许新用户自助注册账户
+              {{ t('ui.allowNewUsersToSelfRegisterAccounts') }}
             </p>
           </div>
         </div>
@@ -120,11 +112,9 @@
             <Label
               for="auto-delete-expired-keys"
               class="cursor-pointer"
-            >
-              自动删除过期 Key
-            </Label>
+            > {{ t('ui.autoDeleteExpiredKeys') }} </Label>
             <p class="text-xs text-muted-foreground">
-              关闭时仅禁用过期的独立余额 Key
+              {{ t('ui.whenDisabledExpiredStandaloneBalanceKeysAreOnlyDisabled') }}
             </p>
           </div>
         </div>
@@ -141,11 +131,9 @@
             <Label
               for="enable-format-conversion"
               class="cursor-pointer"
-            >
-              全局格式转换
-            </Label>
+            > {{ t('ui.globalFormatConversion') }} </Label>
             <p class="text-xs text-muted-foreground">
-              开启后强制允许所有提供商接受跨格式请求
+              {{ t('ui.whenEnabledAllProvidersAreForcedToAcceptCrossFormat') }}
             </p>
           </div>
         </div>
@@ -163,11 +151,9 @@
               <Label
                 for="turnstile-enabled"
                 class="cursor-pointer"
-              >
-                注册人机验证
-              </Label>
+              > {{ t('ui.registrationHumanVerification') }} </Label>
               <p class="text-xs text-muted-foreground">
-                开启后注册与发送邮箱验证码前需要通过 Cloudflare Turnstile
+                {{ t('ui.whenEnabledRegistrationAndEmailVerificationCodeSendingRequireCloudflare') }}
               </p>
             </div>
           </div>
@@ -207,14 +193,14 @@
               :disabled="loading"
               @click="$emit('clearTurnstileSecret')"
             >
-              清空
+              {{ t('ui.clear1ef3de0') }}
             </Button>
           </div>
           <Input
             id="turnstile-secret-key"
             :model-value="turnstileSecretKey"
             type="password"
-            :placeholder="turnstileSecretConfigured ? '已配置，留空不修改' : '输入 Secret Key'"
+            :placeholder="turnstileSecretConfigured ? t('ui.configuredLeaveEmptyToKeepUnchanged') : t('ui.enterSecretKey')"
             class="mt-1"
             autocomplete="new-password"
             @update:model-value="$emit('update:turnstileSecretKey', String($event || ''))"
@@ -225,9 +211,7 @@
           <Label
             for="turnstile-hostnames"
             class="block text-sm font-medium"
-          >
-            允许的 Hostname
-          </Label>
+          > {{ t('ui.allowedHostnames') }} </Label>
           <Input
             id="turnstile-hostnames"
             :model-value="turnstileAllowedHostnamesStr"
@@ -237,7 +221,7 @@
             @update:model-value="$emit('update:turnstileAllowedHostnamesStr', String($event || ''))"
           />
           <p class="mt-1 text-xs text-muted-foreground">
-            留空则不额外校验 Cloudflare 返回的 hostname
+            {{ t('ui.leaveEmptyToSkipExtraValidationOfTheHostnameReturned') }}
           </p>
         </div>
       </div>
@@ -254,11 +238,9 @@
               <Label
                 for="referral-enabled"
                 class="cursor-pointer"
-              >
-                邀请返利
-              </Label>
+              > {{ t('nav.referralRewards') }} </Label>
               <p class="text-xs text-muted-foreground">
-                开启后可按充值比例、人头或两者同时发放赠款返利
+                {{ t('ui.whenEnabledGrantsCanBeRewardedByTopUpRatio') }}
               </p>
             </div>
           </div>
@@ -268,9 +250,7 @@
           <Label
             for="referral-reward-mode"
             class="block text-sm font-medium mb-2"
-          >
-            返利方式
-          </Label>
+          > {{ t('ui.rewardMethod') }} </Label>
           <Select
             :model-value="referralRewardMode"
             @update:model-value="$emit('update:referralRewardMode', $event)"
@@ -280,13 +260,13 @@
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="percent">
-                按充值比例
+                {{ t('ui.byTopUpRatio') }}
               </SelectItem>
               <SelectItem value="headcount">
-                按邀请人头
+                {{ t('ui.byReferredUsers') }}
               </SelectItem>
               <SelectItem value="both">
-                两者同时启用
+                {{ t('ui.enableBoth') }}
               </SelectItem>
             </SelectContent>
           </Select>
@@ -296,9 +276,7 @@
           <Label
             for="referral-recharge-percent"
             class="block text-sm font-medium"
-          >
-            充值返利比例 (%)
-          </Label>
+          > {{ t('ui.topUpRewardRatio') }} </Label>
           <Input
             id="referral-recharge-percent"
             :model-value="referralRechargePercent"
@@ -315,9 +293,7 @@
           <Label
             for="referral-headcount-amount"
             class="block text-sm font-medium"
-          >
-            人头返利金额 (美元)
-          </Label>
+          > {{ t('ui.perUserRewardAmountUsd') }} </Label>
           <Input
             id="referral-headcount-amount"
             :model-value="referralHeadcountAmountUsd"
@@ -333,9 +309,7 @@
           <Label
             for="referral-headcount-trigger"
             class="block text-sm font-medium mb-2"
-          >
-            人头返利触发时机
-          </Label>
+          > {{ t('ui.perUserRewardTrigger') }} </Label>
           <Select
             :model-value="referralHeadcountTrigger"
             @update:model-value="$emit('update:referralHeadcountTrigger', $event)"
@@ -345,28 +319,28 @@
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="registration">
-                注册成功
+                {{ t('auth.register.successTitle') }}
               </SelectItem>
               <SelectItem
                 value="email_verified"
                 :disabled="requireEmailVerification !== true"
               >
-                邮箱验证完成
+                {{ t('ui.emailVerificationComplete') }}
               </SelectItem>
               <SelectItem value="first_paid_order">
-                首笔真实支付完成
+                {{ t('ui.firstRealPaymentComplete') }}
               </SelectItem>
             </SelectContent>
           </Select>
           <p class="mt-2 text-xs text-muted-foreground">
-            邮箱验证返利需要先在“邮件设置”中启用注册邮箱验证，不会自动开启。
+            {{ t('ui.rewardsForEmailVerificationRequireRegistrationEmailVerificationToBe') }}
           </p>
           <p
             v-if="referralHeadcountTrigger === 'email_verified' && requireEmailVerification !== true"
             class="mt-1 text-xs text-destructive"
             role="alert"
           >
-            {{ verificationLookupFailed ? '暂时无法核实邮箱验证配置，请刷新后重试。' : requireEmailVerification === null ? '正在核实邮箱验证配置；请稍后重试。' : '注册邮箱验证未启用，请调整触发时机或先启用邮箱验证。' }}
+            {{ verificationLookupFailed ? t('ui.unableToVerifyTheEmailVerificationConfigurationRefreshAndTry') : requireEmailVerification === null ? t('ui.checkingTheEmailVerificationConfigurationTryAgainShortly') : t('ui.registrationEmailVerificationIsDisabledChangeTheTriggerOrEnable') }}
           </p>
         </div>
       </div>
@@ -383,11 +357,9 @@
               <Label
                 for="privacy-policy-enabled"
                 class="cursor-pointer"
-              >
-                注册隐私政策确认
-              </Label>
+              > {{ t('ui.registrationPrivacyConfirmation') }} </Label>
               <p class="text-xs text-muted-foreground">
-                开启后注册时必须确认当前版本
+                {{ t('ui.whenEnabledUsersMustConfirmTheCurrentVersionDuringRegistration') }}
               </p>
             </div>
           </div>
@@ -397,9 +369,7 @@
           <Label
             for="privacy-policy-version"
             class="block text-sm font-medium"
-          >
-            隐私政策版本
-          </Label>
+          > {{ t('ui.privacyPolicyVersion') }} </Label>
           <Input
             id="privacy-policy-version"
             :model-value="registrationPrivacyPolicyVersion"
@@ -414,9 +384,7 @@
           <Label
             for="privacy-policy-format"
             class="block text-sm font-medium mb-2"
-          >
-            隐私政策格式
-          </Label>
+          > {{ t('ui.privacyPolicyFormat') }} </Label>
           <Select
             :model-value="registrationPrivacyPolicyFormat"
             @update:model-value="$emit('update:registrationPrivacyPolicyFormat', $event)"
@@ -439,15 +407,13 @@
           <Label
             for="privacy-policy-content"
             class="block text-sm font-medium"
-          >
-            隐私政策内容
-          </Label>
+          > {{ t('ui.privacyPolicyContent') }} </Label>
           <Textarea
             id="privacy-policy-content"
             :model-value="registrationPrivacyPolicyContent"
             rows="8"
             class="mt-1"
-            placeholder="填写 Markdown 或 HTML 内容"
+            :placeholder="t('ui.enterMarkdownOrHtmlContent')"
             @update:model-value="$emit('update:registrationPrivacyPolicyContent', $event)"
           />
         </div>
@@ -457,20 +423,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import { authApi } from '@/api/auth'
-import Button from '@/components/ui/button.vue'
-import Input from '@/components/ui/input.vue'
-import Label from '@/components/ui/label.vue'
-import Textarea from '@/components/ui/textarea.vue'
-import Checkbox from '@/components/ui/checkbox.vue'
-import Select from '@/components/ui/select.vue'
-import SelectTrigger from '@/components/ui/select-trigger.vue'
-import SelectValue from '@/components/ui/select-value.vue'
-import SelectContent from '@/components/ui/select-content.vue'
-import SelectItem from '@/components/ui/select-item.vue'
-import { CardSection } from '@/components/layout'
-
+import { useI18n } from '@/i18n'
 defineProps<{
   defaultUserInitialGiftUsd: number
   rateLimitPerMinute: number
@@ -519,6 +472,23 @@ defineEmits<{
   'update:autoDeleteExpiredKeys': [value: boolean]
   'update:enableFormatConversion': [value: boolean]
 }>()
+
+const { t } = useI18n()
+
+import { onMounted, ref } from 'vue'
+import { authApi } from '@/api/auth'
+import Button from '@/components/ui/button.vue'
+import Input from '@/components/ui/input.vue'
+import Label from '@/components/ui/label.vue'
+import Textarea from '@/components/ui/textarea.vue'
+import Checkbox from '@/components/ui/checkbox.vue'
+import Select from '@/components/ui/select.vue'
+import SelectTrigger from '@/components/ui/select-trigger.vue'
+import SelectValue from '@/components/ui/select-value.vue'
+import SelectContent from '@/components/ui/select-content.vue'
+import SelectItem from '@/components/ui/select-item.vue'
+import { CardSection } from '@/components/layout'
+
 const requireEmailVerification = ref<boolean | null>(null)
 const verificationLookupFailed = ref(false)
 onMounted(async () => {

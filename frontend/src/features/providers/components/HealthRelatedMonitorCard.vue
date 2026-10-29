@@ -15,6 +15,8 @@
 </template>
 
 <script setup lang="ts">
+import { translate as t } from '@/i18n'
+
 import { computed } from 'vue'
 import { Activity, Bot, Server } from 'lucide-vue-next'
 import type { HealthRelatedMonitor } from '@/api/endpoints/types'
@@ -49,16 +51,16 @@ const iconComponent = computed(() => {
 const entityLabel = computed(() => {
   switch (props.monitor.kind) {
     case 'model':
-      return '模型'
+      return t('ui.model')
     case 'provider':
-      return '提供商'
+      return t('nav.providers')
     default:
-      return '端点'
+      return t('ui.endpoint52fff16')
   }
 })
 
 const metaText = computed(() => {
-  const attempts = `${formatCompactNumber(props.monitor.total_attempts)} 次请求`
+  const attempts = t('heatmap.requests', { count: String(formatCompactNumber(props.monitor.total_attempts)) })
   if (props.monitor.meta_text?.includes('次请求')) return props.monitor.meta_text
   return props.monitor.meta_text
     ? `${props.monitor.meta_text} / ${attempts}`

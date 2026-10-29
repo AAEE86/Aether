@@ -1,3 +1,4 @@
+import { translate } from '@/i18n'
 import type { TTLAnalysisUser, UserAffinity } from '@/api/cache'
 import { formatNumber } from '@/utils/format'
 
@@ -35,7 +36,7 @@ export function affinityModelSubtitle(item: UserAffinity): string {
 
 export function providerKeyLabel(item: UserAffinity): string {
   if (item.key_name) return item.key_name
-  if (item.key_prefix === '[OAuth Token]') return 'OAuth 认证'
+  if (item.key_prefix === '[OAuth Token]') return translate('ui.oauthAuthentication')
   if (item.key_prefix === '[OAuth Header]') return 'OAuth Header'
   return item.key_prefix || '---'
 }
@@ -77,11 +78,11 @@ export function formatTTL(ttl: number | null): string {
 export function getUnmappedStatusBadge(status: string): { variant: 'default' | 'secondary' | 'destructive' | 'outline', text: string } {
   switch (status) {
     case 'not_found':
-      return { variant: 'secondary', text: '未找到' }
+      return { variant: 'secondary', get text() { return translate('ui.notFound') } }
     case 'invalid':
-      return { variant: 'destructive', text: '无效' }
+      return { variant: 'destructive', get text() { return translate('ui.isInvalid') } }
     case 'error':
-      return { variant: 'destructive', text: '错误' }
+      return { variant: 'destructive', get text() { return translate('ui.error') } }
     default:
       return { variant: 'outline', text: status }
   }

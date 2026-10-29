@@ -1,15 +1,16 @@
+import { translate } from '@/i18n'
 export function proxyNodeDeleteSuccessMessage(
   clearedSystemProxy: boolean,
   clearedExternalModelsProxy: boolean,
 ): string {
   if (clearedSystemProxy && clearedExternalModelsProxy) {
-    return '代理节点已删除，系统默认代理和外部模型目录代理已自动清除'
+    return translate('ui.proxyNodeDeletedTheSystemDefaultProxyAndExternalModel')
   }
   if (clearedSystemProxy) {
-    return '代理节点已删除，系统默认代理已自动清除'
+    return translate('ui.proxyNodeDeletedTheSystemDefaultProxyWasClearedAutomatically')
   }
   if (clearedExternalModelsProxy) {
-    return '代理节点已删除，外部模型目录代理已自动清除'
+    return translate('ui.proxyNodeDeletedTheExternalModelCatalogProxyWasCleared')
   }
-  return '代理节点已删除'
+  return translate('ui.proxyNodeDeleted')
 }

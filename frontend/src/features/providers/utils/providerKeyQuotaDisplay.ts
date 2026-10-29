@@ -1,3 +1,5 @@
+
+import { translate as t } from '@/i18n'
 import { getI18nLocale } from '@/i18n'
 import type { EndpointAPIKey } from '@/api/endpoints'
 import type {
@@ -246,9 +248,9 @@ export function getCodexQuotaDisplay(key: EndpointAPIKey): CodexUpstreamMetadata
 export function getCodexPrimaryQuotaLabel(key: EndpointAPIKey): string {
   return getCodexQuotaWindowLimitLabel({
     code: 'weekly',
-    label: '周',
+    label: t('providers.antigravity.quota.period.weekly'),
     window_minutes: getCodexQuotaDisplay(key)?.primary_window_minutes,
-  }) || '周限额'
+  }) || t('ui.weeklyLimit')
 }
 
 export function hasCodexQuotaDisplayData(key: EndpointAPIKey): boolean {
@@ -410,7 +412,7 @@ export function getXaiUsageLabel(key: EndpointAPIKey): string {
   const display = getXaiQuotaDisplay(key)
   if (display?.usage_label) return display.usage_label
   const title = display?.subscription_title
-  return title ? `使用额度 (${title})` : '使用额度'
+  return title ? t('providers.migration.quotaUsagebd5f27', { value: String(title) }) : t('ui.usageQuota')
 }
 
 export function getXaiUsedPercent(key: EndpointAPIKey): number {

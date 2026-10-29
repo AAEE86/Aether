@@ -6,7 +6,7 @@
       <Input
         v-model="searchQuery"
         type="text"
-        placeholder="搜索模型、提供商..."
+        :placeholder="t('ui.searchModelsOrProviders')"
         class="pl-8 h-8 text-sm"
       />
     </div>
@@ -19,7 +19,7 @@
       >
         <Loader2 class="w-5 h-5 animate-spin text-muted-foreground" />
         <p class="text-xs text-muted-foreground">
-          正在加载在线目录；也可以先手动填写模型
+          {{ t('ui.loadingTheOnlineCatalogYouCanAlsoEnterModelDetails') }}
         </p>
         <Button
           type="button"
@@ -29,7 +29,7 @@
           data-testid="models-catalog-manual-entry-loading"
           @click="$emit('manualEntry')"
         >
-          手动填写
+          {{ t('ui.enterManually') }}
         </Button>
       </div>
       <div
@@ -43,7 +43,7 @@
         </div>
         <div class="max-w-md space-y-1">
           <p class="text-sm font-medium">
-            外部模型目录加载失败
+            {{ t('ui.failedToLoadExternalModelCatalog') }}
           </p>
           <p class="break-words text-xs text-muted-foreground">
             {{ catalogLoadError }}
@@ -57,8 +57,7 @@
           data-testid="models-catalog-retry"
           @click="$emit('retry')"
         >
-          <RefreshCw class="h-3.5 w-3.5" />
-          重试
+          <RefreshCw class="h-3.5 w-3.5" /> {{ t('vscodex.connection.retry') }}
         </Button>
         <Button
           type="button"
@@ -68,7 +67,7 @@
           data-testid="models-catalog-manual-entry"
           @click="$emit('manualEntry')"
         >
-          直接手动填写
+          {{ t('ui.enterDetailsManually') }}
         </Button>
       </div>
       <template v-else>
@@ -82,8 +81,8 @@
             variant="outline"
             size="icon"
             class="absolute left-1 top-1/2 z-10 h-8 w-8 -translate-y-1/2 bg-background/95 shadow-sm"
-            title="向左滚动"
-            aria-label="向左滚动提供商"
+            :title="t('ui.scrollLeft')"
+            :aria-label="t('ui.scrollProvidersLeft')"
             @click="scrollProviderLogos(-1)"
           >
             <ChevronLeft class="h-4 w-4" />
@@ -117,8 +116,8 @@
             variant="outline"
             size="icon"
             class="absolute right-1 top-1/2 z-10 h-8 w-8 -translate-y-1/2 bg-background/95 shadow-sm"
-            title="向右滚动"
-            aria-label="向右滚动提供商"
+            :title="t('ui.scrollRight')"
+            :aria-label="t('ui.scrollProvidersRight')"
             @click="scrollProviderLogos(1)"
           >
             <ChevronRight class="h-4 w-4" />
@@ -173,26 +172,22 @@
                     v-if="item.supportsReasoning"
                     class="inline-flex items-center gap-1 rounded-md border border-violet-500/20 bg-violet-500/10 px-1.5 py-0.5 text-[9px] font-medium text-violet-700 dark:text-violet-300"
                   >
-                    <BrainCircuit class="h-2.5 w-2.5" />推理
-                  </span>
+                    <BrainCircuit class="h-2.5 w-2.5" />{{ t('ui.reasoning132411b') }} </span>
                   <span
                     v-if="item.supportsVision"
                     class="inline-flex items-center gap-1 rounded-md border border-sky-500/20 bg-sky-500/10 px-1.5 py-0.5 text-[9px] font-medium text-sky-700 dark:text-sky-300"
                   >
-                    <Eye class="h-2.5 w-2.5" />视觉
-                  </span>
+                    <Eye class="h-2.5 w-2.5" />{{ t('ui.vision209c47b') }} </span>
                   <span
                     v-if="item.supportsToolCall"
                     class="inline-flex items-center gap-1 rounded-md border border-amber-500/20 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-medium text-amber-700 dark:text-amber-300"
                   >
-                    <Wrench class="h-2.5 w-2.5" />工具
-                  </span>
+                    <Wrench class="h-2.5 w-2.5" />{{ t('ui.tools') }} </span>
                   <span
                     v-if="item.supportsStructuredOutput"
                     class="inline-flex items-center gap-1 rounded-md border border-emerald-500/20 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-medium text-emerald-700 dark:text-emerald-300"
                   >
-                    <Braces class="h-2.5 w-2.5" />结构化
-                  </span>
+                    <Braces class="h-2.5 w-2.5" />{{ t('ui.structuredOutput') }} </span>
                   <span
                     v-if="item.supportsEmbedding"
                     class="inline-flex items-center gap-1 rounded-md border border-fuchsia-500/20 bg-fuchsia-500/10 px-1.5 py-0.5 text-[9px] font-medium text-fuchsia-700 dark:text-fuchsia-300"
@@ -203,22 +198,21 @@
                     v-if="item.openWeights"
                     class="inline-flex items-center gap-1 rounded-md border border-border bg-muted/70 px-1.5 py-0.5 text-[9px] font-medium text-muted-foreground"
                   >
-                    <PackageOpen class="h-2.5 w-2.5" />开放权重
-                  </span>
+                    <PackageOpen class="h-2.5 w-2.5" />{{ t('ui.openWeights') }} </span>
                 </span>
 
                 <span class="mt-auto flex w-full items-end justify-between gap-2 border-t border-border/60 pt-2 text-[9px] text-muted-foreground">
                   <span class="flex min-w-0 flex-col">
-                    <span v-if="item.contextLimit">上下文 {{ formatTokenLimit(item.contextLimit) }}</span>
-                    <span v-else>上下文未知</span>
-                    <span v-if="item.outputLimit">输出 {{ formatTokenLimit(item.outputLimit) }}</span>
+                    <span v-if="item.contextLimit">{{ t('ui.context') }} {{ formatTokenLimit(item.contextLimit) }}</span>
+                    <span v-else>{{ t('ui.unknownContextSize') }}</span>
+                    <span v-if="item.outputLimit">{{ t('ui.outputfb04add') }} {{ formatTokenLimit(item.outputLimit) }}</span>
                   </span>
                   <span
                     v-if="item.inputPrice !== undefined || item.outputPrice !== undefined"
                     class="shrink-0 text-right font-medium tabular-nums text-foreground/70"
                   >
-                    <span class="block">输入 ${{ formatModelPrice(item.inputPrice) }}/M</span>
-                    <span class="block">输出 ${{ formatModelPrice(item.outputPrice) }}/M</span>
+                    <span class="block">{{ t('ui.input4b77c7d') }}{{ formatModelPrice(item.inputPrice) }}/M</span>
+                    <span class="block">{{ t('ui.output') }}{{ formatModelPrice(item.outputPrice) }}/M</span>
                   </span>
                   <span
                     v-else-if="item.releaseDate"
@@ -230,14 +224,14 @@
                 v-if="getExistingModel(item)"
                 class="absolute right-2.5 top-2.5 z-10 flex items-center gap-1.5"
               >
-                <span class="inline-flex h-6 items-center rounded-md bg-muted px-2 text-[10px] font-medium text-muted-foreground">已添加</span>
+                <span class="inline-flex h-6 items-center rounded-md bg-muted px-2 text-[10px] font-medium text-muted-foreground">{{ t('ui.added') }}</span>
                 <Button
                   type="button"
                   variant="outline"
                   size="icon"
                   class="h-7 w-7 bg-background/90 text-muted-foreground shadow-sm hover:text-foreground"
-                  title="去编辑"
-                  :aria-label="`编辑 ${item.modelName}`"
+                  :title="t('ui.edit')"
+                  :aria-label="t('ui.editValue', { name: item.modelName })"
                   :data-testid="`edit-existing-model-${item.modelId}`"
                   @click="editExisting(item)"
                 >
@@ -251,13 +245,13 @@
           v-else-if="groupedModels.length > 0"
           class="flex flex-1 items-center justify-center text-xs text-muted-foreground"
         >
-          点击提供商 Logo 展开模型
+          {{ t('ui.expandAProviderToViewItsModels') }}
         </div>
         <div
           v-else
           class="flex flex-1 items-center justify-center text-sm text-muted-foreground"
         >
-          {{ searchQuery ? '未找到模型' : '暂无可用模型' }}
+          {{ searchQuery ? t('ui.noModelsFound') : t('ui.noModelsAvailable') }}
         </div>
       </template>
     </div>
@@ -265,6 +259,8 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+
 import { computed, ref, watch } from 'vue'
 import {
   BrainCircuit, Braces, Check, ChevronLeft, ChevronRight, Database, Eye,
@@ -304,6 +300,8 @@ const emit = defineEmits<{
   retry: []
   manualEntry: []
 }>()
+
+const { t } = useI18n()
 
 // 搜索词与展开的提供商由父组件持有，折叠后再打开时保持原状
 const searchQuery = computed({
@@ -360,4 +358,5 @@ function editExisting(item: ModelsDevModelItem) {
   const existing = getExistingModel(item)
   if (existing) emit('editExisting', item, existing)
 }
+
 </script>

@@ -1,3 +1,5 @@
+
+import { translate as t } from '@/i18n'
 import { getI18nLocale } from '@/i18n'
 
 export type HealthBadgeVariant =
@@ -114,12 +116,12 @@ export function createEmptyHealthMonitorSectionSummary(): HealthMonitorSectionSu
 
 export function getHealthLabel(
   item: HealthMonitorAvailability,
-  emptyLabel = '暂无请求'
+  emptyLabel = t('ui.noRequestsYet')
 ) {
   if (item.total_attempts <= 0) return emptyLabel
-  if (item.success_rate >= 0.95) return '正常'
-  if (item.success_rate >= 0.8) return '波动'
-  return '异常'
+  if (item.success_rate >= 0.95) return t('ui.normal')
+  if (item.success_rate >= 0.8) return t('ui.warning1e3c8be')
+  return t('ui.unhealthy')
 }
 
 export function getHealthBadgeVariant(
@@ -174,9 +176,9 @@ export function formatTps(value?: number | null) {
 }
 
 export function formatFullTimestamp(timestamp?: string | null) {
-  if (!timestamp) return '未知时间'
+  if (!timestamp) return t('ui.unknownTime')
   const date = new Date(timestamp)
-  if (Number.isNaN(date.getTime())) return '未知时间'
+  if (Number.isNaN(date.getTime())) return t('ui.unknownTime')
   const pad = (value: number) => value.toString().padStart(2, '0')
   return [
     `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
@@ -194,9 +196,9 @@ export function formatTimelineTooltip(input: {
 }) {
   const metrics = input.metrics
   const lines = [
-    `总请求/成功/失败/可用率/状态：${formatTimelineRequestBreakdown(metrics, input.status)}`,
-    `平均耗时/TTFB/速度：${formatTimelineAverageMetrics(metrics)}`,
-    `时间范围：${formatFullTimestamp(input.timeRangeStart)} - ${formatFullTimestamp(input.timeRangeEnd)}`
+    t('providers.migration.totalSucceededFailedAvailabilityStatus942438', { value: String(formatTimelineRequestBreakdown(metrics, input.status)) }),
+    t('providers.migration.averageDurationTtfbSpeede7bbce', { value: String(formatTimelineAverageMetrics(metrics)) }),
+    t('providers.migration.timeRange521cad', { value: String(formatFullTimestamp(input.timeRangeStart)), value_2: String(formatFullTimestamp(input.timeRangeEnd)) })
   ]
   if (input.entityLabel && input.entityName) {
     lines.push(`${input.entityLabel}：${input.entityName}`)
@@ -226,7 +228,7 @@ function formatTimelineRequestBreakdown(
 
 function formatTimelineCount(value?: number | null) {
   if (typeof value !== 'number' || Number.isNaN(value)) return '-'
-  return `${new Intl.NumberFormat(getI18nLocale()).format(value)} 次`
+  return t('providers.migration.requestsb57efe', { value: String(new Intl.NumberFormat(getI18nLocale()).format(value)) })
 }
 
 function formatTimelineMetricAvailability(metrics?: HealthTimelineTooltipMetrics | null) {
@@ -244,9 +246,9 @@ export function formatCompactNumber(value: number) {
 }
 
 export function formatTimestamp(timestamp?: string | null) {
-  if (!timestamp) return '未知时间'
+  if (!timestamp) return t('ui.unknownTime')
   const date = new Date(timestamp)
-  if (Number.isNaN(date.getTime())) return '未知时间'
+  if (Number.isNaN(date.getTime())) return t('ui.unknownTime')
   return date.toLocaleString(getI18nLocale(), {
     month: '2-digit',
     day: '2-digit',
@@ -272,12 +274,17 @@ export function getTimelineColor(status: string) {
 export function getTimelineLabel(status: string) {
   switch (status) {
     case 'healthy':
-      return '健康'
+      return t('ui.health')
     case 'warning':
-      return '波动'
+      return t('ui.warning1e3c8be')
     case 'unhealthy':
-      return '异常'
+      return t('ui.unhealthy')
     default:
-      return '无请求'
+      return t('ui.noRequests')
   }
+}
+
+export interface HealthMonitorSectionData<T> {
+  items: HealthMonitorSectionItem<T>[]
+  generatedAt?: string | null
 }

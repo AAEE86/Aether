@@ -12,10 +12,10 @@
           </div>
           <div class="flex-1 min-w-0">
             <h3 class="text-lg font-semibold text-foreground leading-tight">
-              一键安装并配置 CLI
+              {{ t('ui.oneClickInstallAndConfigureCli') }}
             </h3>
             <p class="text-xs text-muted-foreground truncate">
-              当前密钥：{{ apiKeyLabel }}
+              {{ t('ui.currentKey') }}{{ apiKeyLabel }}
             </p>
           </div>
         </div>
@@ -24,11 +24,11 @@
 
     <div class="space-y-5">
       <div class="rounded-lg border border-border/60 bg-muted/30 p-3 text-xs text-muted-foreground">
-        选择要配置的 CLI 和目标系统，Aether 会生成 15 分钟内有效的一次性 install code。页面命令不会包含原始 API Key。
+        {{ t('ui.selectTheCliAndOperatingSystemAetherGeneratesASingle') }}
       </div>
 
       <div class="space-y-2">
-        <Label class="text-sm font-semibold">目标 CLI</Label>
+        <Label class="text-sm font-semibold">{{ t('ui.targetCli') }}</Label>
         <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
           <Button
             v-for="option in installCliOptions"
@@ -43,7 +43,7 @@
       </div>
 
       <div class="space-y-2">
-        <Label class="text-sm font-semibold">目标系统</Label>
+        <Label class="text-sm font-semibold">{{ t('ui.targetSystem') }}</Label>
         <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
           <Button
             v-for="option in installSystemOptions"
@@ -59,14 +59,14 @@
 
       <div class="space-y-2">
         <div class="flex items-center justify-between gap-2">
-          <Label class="text-sm font-semibold">复制到目标机器执行</Label>
+          <Label class="text-sm font-semibold">{{ t('ui.copyAndRunOnTheTargetMachine') }}</Label>
           <div class="flex items-center gap-2">
             <Button
               variant="outline"
               size="sm"
               class="gap-1.5"
               :disabled="installLoading || !installCommand"
-              :title="installCopied ? '已复制' : '一键复制安装命令'"
+              :title="installCopied ? t('common.copied') : t('ui.copyInstallCommand')"
               @click="copyInstallCommand"
             >
               <CheckCircle
@@ -77,7 +77,7 @@
                 v-else
                 class="h-3.5 w-3.5"
               />
-              {{ installCopied ? '已复制' : '一键复制' }}
+              {{ installCopied ? t('common.copied') : t('ui.copyCommand') }}
             </Button>
             <Button
               variant="ghost"
@@ -85,7 +85,7 @@
               :disabled="installLoading || !apiKey"
               @click="refreshInstallCommand"
             >
-              {{ installLoading ? '生成中...' : '重新生成' }}
+              {{ installLoading ? t('ui.generating') : t('ui.regenerate') }}
             </Button>
           </div>
         </div>
@@ -104,20 +104,22 @@
         class="h-10 px-5"
         @click="emit('update:open', false)"
       >
-        关闭
+        {{ t('ui.close') }}
       </Button>
       <Button
         class="h-10 px-5 shadow-lg shadow-primary/20"
         :disabled="!installCommand || installLoading"
         @click="copyInstallCommand"
       >
-        {{ installCopied ? '已复制' : '复制命令' }}
+        {{ installCopied ? t('common.copied') : t('ui.copyCommand605c82d') }}
       </Button>
     </template>
   </Dialog>
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { CheckCircle, Copy, Terminal } from 'lucide-vue-next'
 import { Button, Dialog, Label } from '@/components/ui'
@@ -149,6 +151,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   'update:open': [value: boolean]
 }>()
+
+const { t } = useI18n()
 
 const { success, error: showError } = useToast()
 const { copyToClipboard } = useClipboard()
@@ -192,9 +196,9 @@ const installCommand = computed(() => {
 
 const installCommandHint = computed(() => {
   if (installSystem.value === 'windows') {
-    return 'Windows 请在 PowerShell 中执行。install code 使用后立即失效，如需再次执行请重新生成。'
+    return t('ui.runThisCommandInPowershellOnWindowsTheInstallCode')
   }
-  return 'macOS / Linux 请在 sh 兼容终端中执行。install code 使用后立即失效，如需再次执行请重新生成。'
+  return t('ui.runThisCommandInAShCompatibleTerminalOnMacos')
 })
 
 function clearInstallCopiedResetTimer() {
@@ -235,7 +239,7 @@ async function refreshInstallCommand() {
   } catch (err: unknown) {
     if (currentRequest !== requestId) return
     log.error('生成 CLI 安装命令失败:', err)
-    showError(parseApiError(err, '生成 CLI 安装命令失败'))
+    showError(parseApiError(err, t('ui.failedToGenerateCliInstallCommand')))
   } finally {
     if (currentRequest === requestId) installLoading.value = false
   }
@@ -247,7 +251,7 @@ async function copyInstallCommand() {
   if (!copied) return
 
   installCopied.value = true
-  success('安装命令已复制到剪贴板')
+  success(t('ui.installCommandCopiedToClipboard'))
   clearInstallCopiedResetTimer()
   installCopiedResetTimer = setTimeout(() => {
     installCopied.value = false
@@ -269,4 +273,5 @@ onBeforeUnmount(() => {
   requestId += 1
   resetInstallCopiedState()
 })
+
 </script>

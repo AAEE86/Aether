@@ -4,8 +4,8 @@
       <!-- 主内容 -->
       <div class="flex-1 min-w-0">
         <PageHeader
-          title="系统设置"
-          description="管理系统级别的配置和参数"
+          :title="t('nav.systemSettings')"
+          :description="t('ui.manageSystemWideSettingsAndParameters')"
         />
 
         <div
@@ -18,7 +18,7 @@
             v-if="systemConfigLoading"
             class="rounded-lg border border-border bg-card px-4 py-3 text-sm text-muted-foreground"
           >
-            系统配置加载中...
+            {{ t('ui.loadingSystemConfiguration') }}
           </div>
 
           <!-- 站点信息 -->
@@ -253,6 +253,9 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+const { t } = useI18n()
+
 import { ref, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { PageHeader, PageContainer } from '@/components/layout'
 import { useProxyNodesStore } from '@/stores/proxy-nodes'
@@ -281,14 +284,14 @@ const proxyNodesStore = useProxyNodesStore()
 
 // TOC 目录导航
 const tocItems = [
-  { id: 'section-site-info', label: '站点信息' },
-  { id: 'section-data-mgmt', label: '数据管理' },
-  { id: 'section-proxy', label: '网络代理' },
-  { id: 'section-basic', label: '基础配置' },
-  { id: 'section-request-log', label: '请求记录' },
-  { id: 'section-cleanup', label: '记录清理策略' },
-  { id: 'section-scheduled', label: '定时任务' },
-  { id: 'section-sysinfo', label: '系统信息' },
+  { id: 'section-site-info', get label() { return t('ui.siteInformation') } },
+  { id: 'section-data-mgmt', get label() { return t('ui.dataManagement') } },
+  { id: 'section-proxy', get label() { return t('ui.networkProxy') } },
+  { id: 'section-basic', get label() { return t('ui.basicConfiguration') } },
+  { id: 'section-request-log', get label() { return t('ui.requestRecords') } },
+  { id: 'section-cleanup', get label() { return t('ui.recordCleanupPolicy') } },
+  { id: 'section-scheduled', get label() { return t('guide.nav.strategy.cronTasks') } },
+  { id: 'section-sysinfo', get label() { return t('ui.systemInformation') } },
 ]
 
 const activeSection = ref(tocItems[0].id)
@@ -452,4 +455,5 @@ onBeforeUnmount(() => {
     observer = null
   }
 })
+
 </script>

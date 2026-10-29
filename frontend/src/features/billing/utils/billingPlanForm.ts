@@ -1,3 +1,4 @@
+import { translate } from '@/i18n'
 import type {
   BillingDurationUnit,
   BillingEntitlement,
@@ -107,8 +108,8 @@ export function getPlanModeGuide(mode: PlanMode): PlanModeGuide {
     case 'wallet':
       return {
         badge: '旧余额权益',
-        title: '旧余额套餐',
-        description: '纯余额套餐已由钱包充值功能承接。建议停用该套餐，或补充每日额度/会员分组后作为混合套餐。',
+        get title() { return translate('ui.legacyWalletCreditPlan') },
+        get description() { return translate('ui.walletTopUpsNowReplaceCreditOnlyPlansDisableThis') },
         notes: [
           '新建套餐不再提供余额包模板',
           '钱包入账请使用充值功能',
@@ -118,8 +119,8 @@ export function getPlanModeGuide(mode: PlanMode): PlanModeGuide {
     case 'daily':
       return {
         badge: '周期额度',
-        title: '每日额度套餐',
-        description: '适合月卡、季卡、年卡。周期内每天给用户独立 USD 额度，到期后不再生效。',
+        get title() { return translate('ui.dailyQuotaPlan') },
+        get description() { return translate('ui.suitableForMonthlyQuarterlyOrAnnualPlansGrantsASeparate') },
         notes: [
           '默认每天按重置时区刷新',
           '默认用完后拒绝继续消费',
@@ -129,8 +130,8 @@ export function getPlanModeGuide(mode: PlanMode): PlanModeGuide {
     case 'membership':
       return {
         badge: '会员权限',
-        title: '会员权益包',
-        description: '适合 Pro、Plus、团队会员。购买后动态合并用户分组权限，到期自然失效。',
+        get title() { return translate('ui.membershipBenefits') },
+        get description() { return translate('ui.suitableForProPlusOrTeamMembershipsAddsGroupPermissions') },
         notes: [
           '不会永久修改用户基础分组',
           '同一用户只保留一个有效会员权益包',
@@ -140,8 +141,8 @@ export function getPlanModeGuide(mode: PlanMode): PlanModeGuide {
     case 'usage':
       return {
         badge: '流量策略',
-        title: '使用限制套餐',
-        description: '按套餐限制请求频率、周期请求数和同时进行的请求数，多条规则可以自由组合。',
+        get title() { return translate('ui.usageLimitPlan140e55e') },
+        get description() { return translate('ui.limitRequestFrequencyRequestsPerPeriodAndConcurrentRequestsCombine') },
         notes: [
           '任意规则触顶都会拒绝新请求',
           'QPS 和 RPM 使用滚动窗口',
@@ -151,8 +152,8 @@ export function getPlanModeGuide(mode: PlanMode): PlanModeGuide {
     case 'mixed':
       return {
         badge: '混合套餐',
-        title: '组合权益套餐',
-        description: '适合同时包含额度、会员权限和流量限制的产品，也可以按需附赠少量钱包余额。',
+        get title() { return translate('ui.bundledBenefitPlan') },
+        get description() { return translate('ui.combinesCreditMembershipPermissionsAndUsageLimitsWithOptionalBonus') },
         notes: [
           '包含每日额度或会员权益时，同类旧套餐会整包失效',
           '附赠余额发放后不随周期结束扣回',
@@ -162,8 +163,8 @@ export function getPlanModeGuide(mode: PlanMode): PlanModeGuide {
     default:
       return {
         badge: '待配置',
-        title: '选择一种套餐模板',
-        description: '先选择每日额度、会员分组、流量限制或混合套餐，再配置价格、购买限制和权益。',
+        get title() { return translate('ui.selectAPlanTemplate') },
+        get description() { return translate('ui.selectDailyCreditMembershipGroupsUsageLimitsOrABundled') },
         notes: [
           '每日额度和会员权益是周期权益',
           '钱包充值已从套餐中拆出',
@@ -174,13 +175,13 @@ export function getPlanModeGuide(mode: PlanMode): PlanModeGuide {
 }
 
 export const weekStartOptions = [
-  { value: '1', label: '周一' },
-  { value: '2', label: '周二' },
-  { value: '3', label: '周三' },
-  { value: '4', label: '周四' },
-  { value: '5', label: '周五' },
-  { value: '6', label: '周六' },
-  { value: '7', label: '周日' },
+  { value: '1', get label() { return translate('ui.mon') } },
+  { value: '2', get label() { return translate('ui.tue') } },
+  { value: '3', get label() { return translate('ui.wed') } },
+  { value: '4', get label() { return translate('ui.thu') } },
+  { value: '5', get label() { return translate('ui.fri') } },
+  { value: '6', get label() { return translate('ui.sat') } },
+  { value: '7', get label() { return translate('ui.sun') } },
 ]
 
 export function buildDefaultForm(): PlanFormState {
@@ -475,10 +476,10 @@ export function isCalendarWindow(kind: UsagePolicyWindowKind): boolean {
 }
 
 export function usageWindowParameterLabel(rule: UsagePolicyRuleForm): string {
-  if (rule.window_kind === 'rolling') return '窗口秒数'
-  if (rule.window_kind === 'calendar_week') return '时区 / 周起始日'
-  if (isCalendarWindow(rule.window_kind)) return '时区（可选）'
-  return '窗口参数'
+  if (rule.window_kind === 'rolling') return translate('ui.windowDurationInSeconds')
+  if (rule.window_kind === 'calendar_week') return translate('ui.timeZoneStartOfWeek')
+  if (isCalendarWindow(rule.window_kind)) return translate('ui.timeZoneOptional')
+  return translate('ui.windowParameters')
 }
 
 export function isValidIanaTimezone(value: string): boolean {
@@ -510,7 +511,7 @@ export function resolvePlanModeFromEntitlements(entitlements: BillingEntitlement
 
 export function formatUsagePolicyBadge(policy: UsagePolicyEntitlement): string {
   const rules = policy.rules || []
-  if (rules.length === 0) return '使用限制'
+  if (rules.length === 0) return translate('ui.usageLimits861d113')
   const first = rules[0]
   const suffix = rules.length > 1 ? ` +${rules.length - 1}` : ''
   if (first.metric === 'concurrency') return `并发 ${first.limit}${suffix}`
@@ -524,9 +525,9 @@ export function formatUsagePolicyBadge(policy: UsagePolicyEntitlement): string {
     rolling: `${first.window.kind === 'rolling' ? first.window.seconds : 0} 秒`,
     calendar_day: '每日',
     calendar_week: '每周',
-    calendar_month: '每月',
-    subscription_period: '套餐周期',
-    concurrent: '并发',
+    get calendar_month() { return translate('ui.everyMonthOnDay') },
+    get subscription_period() { return translate('ui.planPeriod') },
+    get concurrent() { return translate('ui.concurrent2b66a2b') },
   }
   const limit = first.metric === 'actual_cost_usd' ? `$${first.limit}` : first.limit
   return `${windowLabels[first.window.kind]} ${limit}${suffix}`

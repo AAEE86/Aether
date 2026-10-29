@@ -1,3 +1,4 @@
+import { translate } from '@/i18n'
 import type { RequestDetail } from '@/api/dashboard'
 import type { RequestTrace } from '@/api/requestTrace'
 import { formatByteSize, formatCompactNumber, formatTokens } from '@/utils/format'
@@ -236,9 +237,9 @@ export function hasTierCacheCreationSplitPricing(tier: PricingTierLike | null | 
 }
 
 export function formatCacheTtlLabel(ttlMinutes: number | null | undefined): string {
-  if (!ttlMinutes || ttlMinutes <= 0) return '缓存创建'
-  if (ttlMinutes >= 60) return '缓存创建(1h)'
-  if (ttlMinutes <= 5) return '缓存创建(5min)'
+  if (!ttlMinutes || ttlMinutes <= 0) return translate('ui.cacheCreation')
+  if (ttlMinutes >= 60) return translate('ui.cacheWrite1Hour')
+  if (ttlMinutes <= 5) return translate('ui.cacheWrite5Minutes')
   return `缓存创建(${ttlMinutes}min)`
 }
 
@@ -261,11 +262,11 @@ export function formatMediaDuration(seconds: number): string {
 export function getTaskTypeLabel(taskType: string): string {
   switch (taskType) {
     case 'video':
-      return '视频生成'
+      return translate('ui.videoGeneration')
     case 'image':
-      return '图像生成'
+      return translate('ui.imageGeneration')
     case 'audio':
-      return '音频生成'
+      return translate('ui.audioGeneration')
     default:
       return taskType
   }
@@ -282,8 +283,8 @@ export function parseImageSizePixels(size: string | null): number | null {
 }
 
 export function formatImagePriceBucket(bucket: string): string {
-  if (bucket === 'default') return '默认价'
-  if (bucket === 'unbounded') return '无上限'
+  if (bucket === 'default') return translate('ui.defaultPrice')
+  if (bucket === 'unbounded') return translate('ui.unlimited')
   const match = bucket.match(/^<=([0-9]+)px$/)
   if (match) return `<= ${formatPixels(Number(match[1]))}`
   return bucket

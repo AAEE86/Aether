@@ -1,3 +1,5 @@
+
+import { translate as t } from '@/i18n'
 import type {
   ProviderKeyStatusSnapshot,
   QuotaStatusSnapshot,
@@ -153,10 +155,10 @@ function getGeminiCliCreditsTextFromQuota(quota: QuotaStatusSnapshot | null | un
   const credits = quota?.credits
   if (!credits) return null
   const remaining = firstFiniteNumber(credits.remaining, credits.balance)
-  if (remaining != null) return `AI Credits 剩余 ${formatQuotaValue(remaining)}`
-  if (credits.unlimited === true) return 'AI Credits 不限量'
-  if (credits.has_credits === true) return 'AI Credits 可用'
-  if (credits.has_credits === false) return 'AI Credits 已用尽'
+  if (remaining != null) return t('providers.migration.aiCreditsRemainingd6f546', { value: String(formatQuotaValue(remaining)) })
+  if (credits.unlimited === true) return t('providers.migration.unlimitedAiCreditsa560b5')
+  if (credits.has_credits === true) return t('providers.migration.aiCreditsAvailable6fb50e')
+  if (credits.has_credits === false) return t('providers.migration.aiCreditsExhaustedb52d7e')
   return null
 }
 
@@ -185,7 +187,7 @@ export function getGeminiCliAccountCreditsText(
     currentTier?.availableCredits,
     currentTier?.remainingCredits,
   )
-  if (remaining != null) return `AI Credits 剩余 ${formatQuotaValue(remaining)}`
+  if (remaining != null) return t('providers.migration.aiCreditsRemainingd6f546', { value: String(formatQuotaValue(remaining)) })
 
   const hasCredits = typeof credits?.has_credits === 'boolean'
     ? credits.has_credits
@@ -194,11 +196,11 @@ export function getGeminiCliAccountCreditsText(
       : typeof currentTier?.hasCredits === 'boolean'
         ? currentTier.hasCredits
         : null
-  if (hasCredits === true) return 'AI Credits 可用'
-  if (hasCredits === false) return 'AI Credits 已用尽'
+  if (hasCredits === true) return t('providers.migration.aiCreditsAvailable6fb50e')
+  if (hasCredits === false) return t('providers.migration.aiCreditsExhaustedb52d7e')
 
   const unlimited = credits?.unlimited === true || paidTier?.unlimited === true || currentTier?.unlimited === true
-  return unlimited ? 'AI Credits 不限量' : null
+  return unlimited ? t('providers.migration.unlimitedAiCreditsa560b5') : null
 }
 
 const GROK_QUOTA_MODE_LABELS: Record<string, string> = {
@@ -218,7 +220,7 @@ function getGrokQuotaWindowLabel(window: QuotaWindowSnapshot): string {
   const rawCode = normalizeText(window.code)?.replace(/^model:/i, '') || ''
   const rawLabel = normalizeText(window.label) || normalizeText(window.model) || rawCode
   const normalized = (rawLabel || rawCode).trim().toLowerCase()
-  return GROK_QUOTA_MODE_LABELS[normalized] || GROK_QUOTA_MODE_LABELS[rawCode.toLowerCase()] || rawLabel || rawCode || '模式'
+  return GROK_QUOTA_MODE_LABELS[normalized] || GROK_QUOTA_MODE_LABELS[rawCode.toLowerCase()] || rawLabel || rawCode || t('ui.mode')
 }
 
 function getCodexQuotaText(quota: QuotaStatusSnapshot): string | null {
@@ -227,15 +229,15 @@ function getCodexQuotaText(quota: QuotaStatusSnapshot): string | null {
     const presentation = getCodexQuotaWindowPresentation(window)
     const remainingPercent = getQuotaWindowRemainingPercent(window)
     if (!presentation || remainingPercent == null) continue
-    parts.push(`${presentation.label}剩余 ${formatPercent(remainingPercent)}`)
+    parts.push(t('providers.migration.remaining9f01ec', { value: String(presentation.label), value_2: String(formatPercent(remainingPercent)) }))
   }
   if (parts.length > 0) return parts.join(' | ')
 
   if (quota.credits?.has_credits === true && typeof quota.credits.balance === 'number') {
-    return `积分 ${quota.credits.balance.toFixed(2)}`
+    return t('providers.migration.credits57495d', { value: String(quota.credits.balance.toFixed(2)) })
   }
-  if (quota.credits?.has_credits === true) return '有积分'
-  if (quota.credits?.has_credits === false) return '无可用积分'
+  if (quota.credits?.has_credits === true) return t('providers.migration.creditsAvailable02d50c')
+  if (quota.credits?.has_credits === false) return t('providers.migration.noCreditsAvailable2c5d3a')
 
   return normalizeText(quota.label)
 }
@@ -243,23 +245,23 @@ function getCodexQuotaText(quota: QuotaStatusSnapshot): string | null {
 function getKiroQuotaText(quota: QuotaStatusSnapshot): string | null {
   const code = normalizeText(quota.code)?.toLowerCase()
   if (code === 'banned') {
-    return normalizeText(quota.label) || '账号已封禁'
+    return normalizeText(quota.label) || t('ui.accountBanned210dc8d')
   }
 
   const window = getQuotaWindow(quota, 'usage') ?? getQuotaWindowsByScope(quota, 'account')[0] ?? null
   const remainingPercent = getQuotaWindowRemainingPercent(window)
   if (typeof window?.remaining_value === 'number' && typeof window.limit_value === 'number' && window.limit_value > 0 && window.remaining_value <= 0) {
-    return `剩余 ${formatQuotaValue(window.remaining_value)}/${formatQuotaValue(window.limit_value)}`
+    return t('providers.migration.remaining3e9a48', { value: String(formatQuotaValue(window.remaining_value)), value_2: String(formatQuotaValue(window.limit_value)) })
   }
   if (remainingPercent != null) {
     if (typeof window?.used_value === 'number' && typeof window.limit_value === 'number' && window.limit_value > 0) {
-      return `剩余 ${formatPercent(remainingPercent)} (${formatQuotaValue(window.used_value)}/${formatQuotaValue(window.limit_value)})`
+      return t('providers.migration.remaining40a2ab', { value: String(formatPercent(remainingPercent)), value_2: String(formatQuotaValue(window.used_value)), value_3: String(formatQuotaValue(window.limit_value)) })
     }
-    return `剩余 ${formatPercent(remainingPercent)}`
+    return t('providers.migration.remaining43f955', { value: String(formatPercent(remainingPercent)) })
   }
 
   if (typeof window?.remaining_value === 'number' && typeof window.limit_value === 'number' && window.limit_value > 0) {
-    return `剩余 ${formatQuotaValue(window.remaining_value)}/${formatQuotaValue(window.limit_value)}`
+    return t('providers.migration.remaining3e9a48', { value: String(formatQuotaValue(window.remaining_value)), value_2: String(formatQuotaValue(window.limit_value)) })
   }
 
   return normalizeText(quota.label)
@@ -272,16 +274,16 @@ function getXaiQuotaText(quota: QuotaStatusSnapshot): string | null {
 
   const prepaid = getQuotaWindow(quota, 'prepaid')
   if (typeof prepaid?.remaining_value === 'number') {
-    parts.push(`预付剩余 ${formatQuotaValue(prepaid.remaining_value)}`)
+    parts.push(t('providers.migration.prepaidRemaining925e85', { value: String(formatQuotaValue(prepaid.remaining_value)) }))
   }
 
   const onDemand = getQuotaWindow(quota, 'on_demand')
   const onDemandRemaining = getQuotaWindowRemainingPercent(onDemand)
   if (onDemandRemaining != null) {
     const valueText = getQuotaWindowValueText(onDemand)
-    parts.push(`按需剩余 ${formatPercent(onDemandRemaining)}${valueText ? ` (${valueText})` : ''}`)
+    parts.push(t('providers.migration.onDemandRemainingee3571', { value: String(formatPercent(onDemandRemaining)), value_2: String(valueText ? ` (${valueText})` : '') }))
   } else if (typeof onDemand?.remaining_value === 'number') {
-    parts.push(`按需剩余 ${formatQuotaValue(onDemand.remaining_value)}`)
+    parts.push(t('providers.migration.onDemandRemaining91ba64', { value: String(formatQuotaValue(onDemand.remaining_value)) }))
   }
 
   if (parts.length > 0) return parts.join(' | ')
@@ -291,10 +293,10 @@ function getXaiQuotaText(quota: QuotaStatusSnapshot): string | null {
 function getGrokQuotaText(quota: QuotaStatusSnapshot): string | null {
   const code = normalizeText(quota.code)?.toLowerCase()
   if (code === 'banned') {
-    return normalizeText(quota.label) || '账号已封禁'
+    return normalizeText(quota.label) || t('ui.accountBanned210dc8d')
   }
   if (code === 'forbidden') {
-    return normalizeText(quota.label) || '访问受限'
+    return normalizeText(quota.label) || t('ui.accessRestricted')
   }
 
   const modelWindows = getQuotaWindowsByScope(quota, 'model')
@@ -303,7 +305,7 @@ function getGrokQuotaText(quota: QuotaStatusSnapshot): string | null {
       const remainingPercent = getQuotaWindowRemainingPercent(window)
       if (remainingPercent == null) return null
       const valueText = getQuotaWindowValueText(window)
-      return `${getGrokQuotaWindowLabel(window)}剩余 ${formatPercent(remainingPercent)}${valueText ? ` (${valueText})` : ''}`
+      return t('providers.migration.remaining1ee0b3', { value: String(getGrokQuotaWindowLabel(window)), value_2: String(formatPercent(remainingPercent)), value_3: String(valueText ? ` (${valueText})` : '') })
     })
     .filter((value): value is string => value != null)
 
@@ -312,18 +314,18 @@ function getGrokQuotaText(quota: QuotaStatusSnapshot): string | null {
   const window = getQuotaWindow(quota, 'usage') ?? getQuotaWindowsByScope(quota, 'account')[0] ?? null
   const remainingPercent = getQuotaWindowRemainingPercent(window)
   if (typeof window?.remaining_value === 'number' && typeof window.limit_value === 'number' && window.limit_value > 0 && window.remaining_value <= 0) {
-    return `剩余 ${formatQuotaValue(window.remaining_value)}/${formatQuotaValue(window.limit_value)}`
+    return t('providers.migration.remaining3e9a48', { value: String(formatQuotaValue(window.remaining_value)), value_2: String(formatQuotaValue(window.limit_value)) })
   }
   if (remainingPercent != null) {
     const valueText = getQuotaWindowValueText(window)
     if (valueText) {
-      return `剩余 ${formatPercent(remainingPercent)} (${valueText})`
+      return t('providers.migration.remaining2fddcd', { value: String(formatPercent(remainingPercent)), value_2: String(valueText) })
     }
-    return `剩余 ${formatPercent(remainingPercent)}`
+    return t('providers.migration.remaining43f955', { value: String(formatPercent(remainingPercent)) })
   }
 
   if (typeof window?.remaining_value === 'number' && typeof window.limit_value === 'number' && window.limit_value > 0) {
-    return `剩余 ${formatQuotaValue(window.remaining_value)}/${formatQuotaValue(window.limit_value)}`
+    return t('providers.migration.remaining3e9a48', { value: String(formatQuotaValue(window.remaining_value)), value_2: String(formatQuotaValue(window.limit_value)) })
   }
 
   return normalizeText(quota.label)
@@ -332,23 +334,23 @@ function getGrokQuotaText(quota: QuotaStatusSnapshot): string | null {
 function getWindsurfQuotaText(quota: QuotaStatusSnapshot): string | null {
   const code = normalizeText(quota.code)?.toLowerCase()
   if (code === 'banned' || code === 'forbidden' || code === 'quarantined') {
-    return normalizeText(quota.label) || '账号不可用'
+    return normalizeText(quota.label) || t('ui.accountUnavailable')
   }
   if (code === 'cooldown' && windsurfCooldownHasPositiveReset(quota)) {
-    return normalizeText(quota.label) || '冷却中'
+    return normalizeText(quota.label) || t('ui.coolingDown')
   }
   if (code === 'rate_limited' || code === 'rate_limit') {
-    return normalizeText(quota.label) || '速率受限'
+    return normalizeText(quota.label) || t('ui.rateLimited6d5ac6f')
   }
   if (code === 'exhausted') {
-    return normalizeText(quota.label) || '额度已耗尽'
+    return normalizeText(quota.label) || t('providers.migration.quotaExhaustedbe24f8')
   }
 
   const parts: string[] = []
   const dailyRemaining = getQuotaWindowRemainingPercent(getQuotaWindow(quota, 'daily'))
   const weeklyRemaining = getQuotaWindowRemainingPercent(getQuotaWindow(quota, 'weekly'))
-  if (dailyRemaining != null) parts.push(`日剩余 ${formatPercent(dailyRemaining)}`)
-  if (weeklyRemaining != null) parts.push(`周剩余 ${formatPercent(weeklyRemaining)}`)
+  if (dailyRemaining != null) parts.push(t('providers.migration.dailyRemaining0a4f9b', { value: String(formatPercent(dailyRemaining)) }))
+  if (weeklyRemaining != null) parts.push(t('providers.migration.weeklyRemaininge92827', { value: String(formatPercent(weeklyRemaining)) }))
 
   for (const [label, code] of [
     ['Prompt', 'prompt'],
@@ -357,27 +359,27 @@ function getWindsurfQuotaText(quota: QuotaStatusSnapshot): string | null {
     const window = getQuotaWindow(quota, code)
     if (!window) continue
     if (typeof window.remaining_value === 'number' && typeof window.limit_value === 'number' && window.limit_value > 0) {
-      parts.push(`${label} 剩余 ${formatQuotaValue(window.remaining_value)}/${formatQuotaValue(window.limit_value)}`)
+      parts.push(t('providers.migration.remainingee3ffa', { value: String(label), value_2: String(formatQuotaValue(window.remaining_value)), value_3: String(formatQuotaValue(window.limit_value)) }))
       continue
     }
     if (typeof window.used_value === 'number' && typeof window.limit_value === 'number' && window.limit_value > 0) {
-      parts.push(`${label} 剩余 ${formatQuotaValue(Math.max(window.limit_value - window.used_value, 0))}/${formatQuotaValue(window.limit_value)}`)
+      parts.push(t('providers.migration.remainingee3ffa', { value: String(label), value_2: String(formatQuotaValue(Math.max(window.limit_value - window.used_value, 0))), value_3: String(formatQuotaValue(window.limit_value)) }))
       continue
     }
     const remainingPercent = getQuotaWindowRemainingPercent(window)
     if (remainingPercent != null) {
-      parts.push(`${label} 剩余 ${formatPercent(remainingPercent)}`)
+      parts.push(t('providers.migration.remaining45c77d', { value: String(label), value_2: String(formatPercent(remainingPercent)) }))
     }
   }
 
   if (typeof quota.allowed_models_count === 'number') {
-    parts.push(`可用模型 ${quota.allowed_models_count} 个`)
+    parts.push(t('providers.migration.availableModelsed776b', { value: String(quota.allowed_models_count) }))
   }
 
   if (parts.length > 0) return parts.join(' | ')
 
   if (code === 'cooldown') {
-    return normalizeText(quota.label) || '冷却中'
+    return normalizeText(quota.label) || t('ui.coolingDown')
   }
 
   return normalizeText(quota.label)
@@ -386,7 +388,7 @@ function getWindsurfQuotaText(quota: QuotaStatusSnapshot): string | null {
 function getAntigravityQuotaText(quota: QuotaStatusSnapshot): string | null {
   const code = normalizeText(quota.code)?.toLowerCase()
   if (code === 'forbidden') {
-    return normalizeText(quota.label) || '访问受限'
+    return normalizeText(quota.label) || t('ui.accessRestricted')
   }
 
   const remainingList = getQuotaWindowsByScope(quota, 'model')
@@ -397,9 +399,9 @@ function getAntigravityQuotaText(quota: QuotaStatusSnapshot): string | null {
 
   const minimumRemaining = Math.min(...remainingList)
   if (remainingList.length === 1) {
-    return `剩余 ${formatPercent(minimumRemaining)}`
+    return t('providers.migration.remaining43f955', { value: String(formatPercent(minimumRemaining)) })
   }
-  return `最低剩余 ${formatPercent(minimumRemaining)} (${remainingList.length} 模型)`
+  return t('providers.migration.lowestRemainingModelsb37cfc', { value: String(formatPercent(minimumRemaining)), value_2: String(remainingList.length) })
 }
 
 function getGeminiCliQuotaText(quota: QuotaStatusSnapshot): string | null {
@@ -415,13 +417,13 @@ function getGeminiCliQuotaText(quota: QuotaStatusSnapshot): string | null {
       if (typeof window.reset_at !== 'number') return true
       return window.reset_at > Math.floor(Date.now() / 1000)
     })
-    .map((window) => normalizeText(window.label) || normalizeText(window.model) || '模型')
+    .map((window) => normalizeText(window.label) || normalizeText(window.model) || t('ui.model'))
 
   if (activeCoolingModels.length === 1) {
-    return `${activeCoolingModels[0]} 冷却中`
+    return t('providers.migration.coolingDown071d3a', { value: String(activeCoolingModels[0]) })
   }
   if (activeCoolingModels.length > 1) {
-    return `${activeCoolingModels.length} 个模型冷却中`
+    return t('providers.migration.modelsCoolingDown639cf8', { value: String(activeCoolingModels.length) })
   }
 
   const remainingList = modelWindows
@@ -432,9 +434,9 @@ function getGeminiCliQuotaText(quota: QuotaStatusSnapshot): string | null {
   const minimumRemaining = Math.min(...remainingList)
   if (creditsText) return creditsText
   if (remainingList.length === 1) {
-    return `剩余 ${formatPercent(minimumRemaining)}`
+    return t('providers.migration.remaining43f955', { value: String(formatPercent(minimumRemaining)) })
   }
-  return `最低剩余 ${formatPercent(minimumRemaining)} (${remainingList.length} 模型)`
+  return t('providers.migration.lowestRemainingModelsb37cfc', { value: String(formatPercent(minimumRemaining)), value_2: String(remainingList.length) })
 }
 
 function getChatGPTWebQuotaText(quota: QuotaStatusSnapshot): string | null {
@@ -443,14 +445,14 @@ function getChatGPTWebQuotaText(quota: QuotaStatusSnapshot): string | null {
 
   const remainingPercent = getQuotaWindowRemainingPercent(window)
   if (typeof window.remaining_value === 'number' && typeof window.limit_value === 'number' && window.limit_value > 0) {
-    return `生图剩余 ${formatQuotaValue(window.remaining_value)}/${formatQuotaValue(window.limit_value)}`
+    return t('providers.migration.imagesRemainingfb537f', { value: String(formatQuotaValue(window.remaining_value)), value_2: String(formatQuotaValue(window.limit_value)) })
   }
   if (remainingPercent != null) {
-    return `生图剩余 ${formatPercent(remainingPercent)}`
+    return t('providers.migration.imagesRemaining41c714', { value: String(formatPercent(remainingPercent)) })
   }
 
   if (typeof window.remaining_value === 'number') {
-    return `生图剩余 ${formatQuotaValue(window.remaining_value)}`
+    return t('providers.migration.imagesRemaining41c714', { value: String(formatQuotaValue(window.remaining_value)) })
   }
 
   return normalizeText(quota.label)

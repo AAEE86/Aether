@@ -28,7 +28,7 @@
         v-if="!sidebarCollapsed"
         role="separator"
         aria-orientation="vertical"
-        :aria-label="locale === 'zh-CN' ? '调整导航栏宽度' : 'Resize navigation sidebar'"
+        :aria-label="locale === 'zh-CN' ? t('ui.resizeNavigationSidebar') : 'Resize navigation sidebar'"
         :aria-valuenow="sidebarWidth"
         :aria-valuemin="sidebarMinWidth"
         :aria-valuemax="sidebarMaxWidth"

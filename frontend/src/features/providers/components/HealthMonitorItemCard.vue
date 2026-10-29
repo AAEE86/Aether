@@ -69,13 +69,15 @@
         size="sm"
         @click="$emit('viewDetails')"
       >
-        查看详情
+        {{ t('ui.viewDetails') }}
       </Button>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+
 import type { Component } from 'vue'
 import Badge from '@/components/ui/badge.vue'
 import Button from '@/components/ui/button.vue'
@@ -108,4 +110,7 @@ withDefaults(defineProps<{
 defineEmits<{
   viewDetails: []
 }>()
+
+const { t } = useI18n()
+
 </script>

@@ -8,8 +8,8 @@
         variant="ghost"
         size="icon"
         class="h-5 w-5 rounded-full border border-transparent text-muted-foreground/80 hover:border-border/60 hover:bg-muted/60 hover:text-foreground"
-        title="查看评分计算结果"
-        aria-label="查看评分计算结果"
+        :title="t('ui.viewScoreCalculation')"
+        :aria-label="t('ui.viewScoreCalculation')"
         @click.stop
       >
         <CircleHelp class="h-3.5 w-3.5" />
@@ -24,7 +24,7 @@
     >
       <div class="text-left">
         <div class="flex items-center justify-between gap-3 border-b border-border/60 bg-muted/30 px-3 py-2.5">
-          <span class="text-xs font-semibold text-foreground">评分计算结果</span>
+          <span class="text-xs font-semibold text-foreground">{{ t('ui.scoreCalculation') }}</span>
           <span class="font-mono text-xs tabular-nums text-foreground/90">
             {{ formatPoolScore(score.score) }}
           </span>
@@ -43,8 +43,7 @@
             >
               {{ getPoolScoreProbeStatusLabel(score.probe_status) }}
             </Badge>
-            <span class="text-[10px] text-muted-foreground">
-              更新 {{ formatUnixSeconds(score.updated_at) }}
+            <span class="text-[10px] text-muted-foreground"> {{ t('ui.update') }} {{ formatUnixSeconds(score.updated_at) }}
             </span>
           </div>
           <pre class="max-h-56 overflow-auto rounded-md border border-border/50 bg-muted/30 px-3 py-2 font-mono text-[11px] leading-5 text-muted-foreground whitespace-pre-wrap break-words">{{ formatPoolScoreReason(score.score_reason) }}</pre>
@@ -55,6 +54,8 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+
 import { CircleHelp } from 'lucide-vue-next'
 import { Badge, Button, Popover, PopoverContent, PopoverTrigger } from '@/components/ui'
 import type { PoolKeyScoreDetail } from '@/api/endpoints/pool'
@@ -75,4 +76,7 @@ defineProps<{
 defineEmits<{
   'update:open': [value: boolean]
 }>()
+
+const { t } = useI18n()
+
 </script>

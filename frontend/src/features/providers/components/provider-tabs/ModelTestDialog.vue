@@ -31,21 +31,21 @@
       >
         <div class="grid min-h-8 w-full items-center gap-2 sm:h-8 sm:grid-cols-2">
           <div class="text-sm font-medium text-foreground">
-            选择测试端点
+            {{ t('ui.selectTestEndpoint') }}
           </div>
           <div
             v-if="modelMappingAvailable"
             class="grid w-full grid-cols-[auto_1fr] items-center gap-2"
           >
             <div class="text-sm font-medium text-foreground">
-              模型映射
+              {{ t('guide.nav.concepts.modelMapping') }}
             </div>
             <Select
               :model-value="selectedModelMappingValue"
               @update:model-value="handleModelMappingValueChange"
             >
               <SelectTrigger class="h-8 min-h-8 w-full shrink-0 overflow-hidden border-border/60 py-0 text-xs leading-none [transition-property:none] [&>span:first-child]:min-w-0 [&>span:first-child]:flex-1 [&>span:first-child]:text-left [&>span:first-child]:leading-none">
-                <SelectValue :placeholder="requestedModelName || '当前模型'" />
+                <SelectValue :placeholder="requestedModelName || t('ui.currentModel')" />
               </SelectTrigger>
               <SelectContent
                 class="w-[var(--radix-select-trigger-width)]"
@@ -92,7 +92,7 @@
                 </div>
               </div>
               <Badge :variant="selectedEndpoint?.id === endpoint.id ? 'success' : 'outline'">
-                {{ selectedEndpoint?.id === endpoint.id ? '已选择' : (endpoint.is_active ? '可用' : '已禁用') }}
+                {{ selectedEndpoint?.id === endpoint.id ? t('ui.selected3f4ebc4') : (endpoint.is_active ? t('ui.available4d99c97') : t('ui.disabledbc5a87a')) }}
               </Badge>
             </div>
           </button>
@@ -105,7 +105,7 @@
       >
         <div class="flex items-center justify-between gap-3">
           <div class="text-sm font-medium text-foreground">
-            测试 Key
+            {{ t('ui.testKey') }}
           </div>
           <div class="text-xs text-muted-foreground">
             {{ keySelectionStatus }}
@@ -115,9 +115,9 @@
           :model-value="selectedKeyIds"
           :options="keyOptions"
           :placeholder="keySelectorPlaceholder"
-          search-placeholder="搜索 Key"
-          empty-text="暂无可选 Key"
-          no-results-text="未找到匹配 Key"
+          :search-placeholder="t('ui.searchKeys')"
+          :empty-text="t('ui.noKeysAvailableToSelect')"
+          :no-results-text="t('ui.noMatchingKeys')"
           trigger-class="h-9 min-h-9 rounded-md border-border/60 text-xs"
           dropdown-min-width="24rem"
           :search-threshold="0"
@@ -130,14 +130,14 @@
         <div class="space-y-2">
           <div class="flex items-center justify-between gap-3">
             <div class="text-sm font-medium">
-              测试请求头
+              {{ t('ui.testRequestHeaders') }}
             </div>
             <div class="flex items-center gap-1">
               <Button
                 variant="ghost"
                 size="icon"
                 class="h-8 w-8 rounded-lg text-muted-foreground"
-                title="格式化请求头 JSON"
+                :title="t('ui.formatHeadersJson')"
                 @click="formatRequestHeadersDraft"
               >
                 <Code2 class="h-4 w-4" />
@@ -146,7 +146,7 @@
                 variant="ghost"
                 size="icon"
                 class="h-8 w-8 rounded-lg text-muted-foreground"
-                title="重置请求头"
+                :title="t('ui.resetHeaders')"
                 @click="resetRequestHeadersDraft"
               >
                 <RotateCcw class="h-4 w-4" />
@@ -156,7 +156,7 @@
           <Textarea
             :model-value="requestHeadersDraft"
             class="min-h-[220px] font-mono text-xs"
-            placeholder="输入 JSON 请求头"
+            :placeholder="t('ui.enterRequestHeadersAsJson')"
             @update:model-value="emit('update:requestHeadersDraft', $event)"
           />
           <div
@@ -166,21 +166,21 @@
             {{ requestHeadersError }}
           </div>
           <div class="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-[11px] text-muted-foreground">
-            这里的请求头会合并到测试请求里；鉴权头和必要系统头仍由后端按端点规则补齐。
+            {{ t('ui.theseHeadersAreMergedIntoTheTestRequestAuthenticationAnd') }}
           </div>
         </div>
 
         <div class="space-y-2">
           <div class="flex items-center justify-between gap-3">
             <div class="text-sm font-medium">
-              测试请求体
+              {{ t('ui.testRequestBody') }}
             </div>
             <div class="flex items-center gap-1">
               <Button
                 variant="ghost"
                 size="icon"
                 class="h-8 w-8 rounded-lg text-muted-foreground"
-                title="格式化请求体 JSON"
+                :title="t('ui.formatBodyJson')"
                 @click="formatRequestBodyDraft"
               >
                 <Code2 class="h-4 w-4" />
@@ -189,7 +189,7 @@
                 variant="ghost"
                 size="icon"
                 class="h-8 w-8 rounded-lg text-muted-foreground"
-                title="重置请求体"
+                :title="t('ui.resetRequestBody')"
                 @click="resetRequestBodyDraft"
               >
                 <RotateCcw class="h-4 w-4" />
@@ -199,7 +199,7 @@
           <Textarea
             :model-value="requestBodyDraft"
             class="min-h-[220px] font-mono text-xs"
-            placeholder="输入 JSON 请求体"
+            :placeholder="t('ui.enterRequestBodyAsJson')"
             @update:model-value="emit('update:requestBodyDraft', $event)"
           />
           <div
@@ -209,7 +209,7 @@
             {{ requestBodyError }}
           </div>
           <div class="rounded-md border border-border/60 bg-muted/20 px-3 py-2 text-[11px] text-muted-foreground">
-            请求体中的 model 会按当前编辑内容发送；未填写时使用当前测试模型，实际发送时会按端点格式转换并应用规则。
+            {{ t('ui.theModelFieldUsesYourEditedValueOrTheCurrent') }}
           </div>
         </div>
       </div>
@@ -219,7 +219,7 @@
         :disabled="startDisabled"
         @click="emit('start')"
       >
-        开始测试
+        {{ t('ui.startTest') }}
       </Button>
     </div>
 
@@ -231,7 +231,7 @@
         <Loader2 class="h-8 w-8 animate-spin text-primary" />
         <div class="space-y-1">
           <p class="text-sm font-medium">
-            正在测试模型
+            {{ t('ui.testingModel') }}
           </p>
           <p class="text-xs text-muted-foreground">
             {{ selectingModelName || '-' }}
@@ -240,7 +240,7 @@
             v-if="selectedEndpoint"
             class="text-xs text-muted-foreground"
           >
-            端点：{{ formatApiFormat(selectedEndpoint.api_format) }} · {{ selectedEndpoint.base_url }}
+            {{ t('ui.endpoint') }}{{ formatApiFormat(selectedEndpoint.api_format) }} · {{ selectedEndpoint.base_url }}
           </p>
         </div>
       </div>
@@ -248,7 +248,7 @@
       <div class="rounded-lg border border-border/60 bg-muted/20 p-4 space-y-4">
         <div class="space-y-2">
           <div class="flex items-center justify-between gap-3 text-xs text-muted-foreground">
-            <span>实时进度</span>
+            <span>{{ t('ui.liveProgress') }}</span>
             <span>{{ liveProgressText }}</span>
           </div>
           <div class="h-2 overflow-hidden rounded-full bg-muted">
@@ -274,7 +274,7 @@
             v-else
             class="text-xs text-muted-foreground"
           >
-            正在准备测试请求
+            {{ t('ui.preparingTestRequest') }}
           </div>
         </div>
 
@@ -295,7 +295,7 @@
           </div>
           <div class="rounded-md border border-border/60 bg-background/80 p-3 space-y-1">
             <div class="text-xs text-muted-foreground">
-              状态
+              {{ t('ui.status6320b4a') }}
             </div>
             <div class="text-sm font-medium">
               {{ liveStatusTitle }}
@@ -313,7 +313,7 @@
           v-if="requestId"
           class="break-all text-[11px] text-muted-foreground"
         >
-          请求 ID：<code class="rounded bg-muted px-1 py-0.5">{{ requestId }}</code>
+          {{ t('ui.requestId') }}<code class="rounded bg-muted px-1 py-0.5">{{ requestId }}</code>
         </div>
 
         <div
@@ -321,7 +321,7 @@
           class="space-y-2"
         >
           <div class="text-xs font-medium text-muted-foreground">
-            最近
+            {{ t('ui.recent') }}
           </div>
           <div class="space-y-2">
             <div
@@ -367,14 +367,14 @@
               :variant="result.success ? 'success' : 'destructive'"
               class="px-2 py-0.5"
             >
-              {{ result.success ? '测试成功' : '测试失败' }}
+              {{ result.success ? t('ui.testPassed') : t('ui.testFailed') }}
             </Badge>
           </div>
           <div
             v-if="hasEffectiveModel"
             class="text-xs text-muted-foreground"
           >
-            请求模型：{{ resultModelTitle }}
+            {{ t('ui.requestedModel') }}{{ resultModelTitle }}
           </div>
         </div>
 
@@ -389,7 +389,7 @@
           </div>
           <div class="rounded-md border border-border/60 bg-background/80 p-3 space-y-1">
             <div class="text-xs text-muted-foreground">
-              调度结果
+              {{ t('ui.schedulingResult') }}
             </div>
             <div class="text-sm font-medium">
               {{ resultDispatchTitle }}
@@ -397,7 +397,7 @@
           </div>
           <div class="rounded-md border border-border/60 bg-background/80 p-3 space-y-1">
             <div class="text-xs text-muted-foreground">
-              实际请求
+              {{ t('ui.actualRequest') }}
             </div>
             <div class="break-all text-sm font-medium">
               {{ resultModelTitle }}
@@ -424,13 +424,13 @@
         v-if="shouldCollapseAttempts"
         class="flex items-center justify-between gap-3 text-xs text-muted-foreground"
       >
-        <span>仅展示前 {{ visibleAttempts.length }} 条，共 {{ resultAttempts.length }} 条</span>
+        <span>{{ t('ui.showingTheFirst') }} {{ visibleAttempts.length }} {{ t('ui.of') }} {{ resultAttempts.length }} {{ t('ui.itemsf004f1d') }}</span>
         <Button
           variant="ghost"
           size="sm"
           @click="showAllAttempts = !showAllAttempts"
         >
-          {{ showAllAttempts ? '收起详情' : `展开全部 ${resultAttempts.length} 条` }}
+          {{ showAllAttempts ? t('ui.hideDetails') : t('ui.expandAllValueItems', { count: resultAttempts.length }) }}
         </Button>
       </div>
 
@@ -521,13 +521,13 @@
                 Key
               </th>
               <th class="px-3 py-2 text-left font-medium">
-                状态
+                {{ t('ui.status6320b4a') }}
               </th>
               <th class="px-3 py-2 text-right font-medium">
-                延迟
+                {{ t('ui.latency') }}
               </th>
               <th class="px-3 py-2 text-left font-medium">
-                详情
+                {{ t('ui.details') }}
               </th>
             </tr>
           </thead>
@@ -654,7 +654,7 @@
                 <div class="content-block rounded-md border overflow-hidden">
                   <div class="flex items-center justify-end gap-0.5 px-3 py-1 border-b bg-muted/40">
                     <button
-                      :title="inspectionExpandDepth === 0 ? '展开全部' : '收缩全部'"
+                      :title="inspectionExpandDepth === 0 ? t('ui.expandAll') : t('ui.collapseAll')"
                       class="p-1 rounded transition-colors text-muted-foreground hover:bg-muted"
                       @click="inspectionExpandDepth === 0 ? expandInspectionContent() : collapseInspectionContent()"
                     >
@@ -669,7 +669,7 @@
                     </button>
 
                     <button
-                      :title="inspectionCopiedStates[inspectionTab] ? '已复制' : '复制'"
+                      :title="inspectionCopiedStates[inspectionTab] ? t('common.copied') : t('common.copy')"
                       class="p-1 rounded transition-colors text-muted-foreground hover:bg-muted"
                       @click="copyInspectionContent(inspectionTab)"
                     >
@@ -690,7 +690,7 @@
                       view-mode="formatted"
                       :expand-depth="inspectionExpandDepth"
                       :is-dark="isDark"
-                      empty-message="无请求头数据"
+                      :empty-message="t('ui.noRequestHeaders')"
                     />
                   </TabsContent>
 
@@ -700,7 +700,7 @@
                       view-mode="formatted"
                       :expand-depth="inspectionExpandDepth"
                       :is-dark="isDark"
-                      empty-message="无请求体数据"
+                      :empty-message="t('ui.noRequestBody19667d3')"
                     />
                   </TabsContent>
 
@@ -710,7 +710,7 @@
                       view-mode="formatted"
                       :expand-depth="inspectionExpandDepth"
                       :is-dark="isDark"
-                      empty-message="无响应头数据"
+                      :empty-message="t('ui.noResponseHeaders')"
                     />
                   </TabsContent>
 
@@ -720,7 +720,7 @@
                       view-mode="formatted"
                       :expand-depth="inspectionExpandDepth"
                       :is-dark="isDark"
-                      empty-message="无响应体数据"
+                      :empty-message="t('ui.noResponseBody0f51f71')"
                     />
                   </TabsContent>
                 </div>
@@ -736,14 +736,14 @@
         variant="outline"
         @click="emit('close')"
       >
-        {{ showSetup ? '取消' : '关闭' }}
+        {{ showSetup ? t('common.cancel') : t('ui.close') }}
       </Button>
       <Button
         v-if="showResult"
         variant="outline"
         @click="emit('back')"
       >
-        返回
+        {{ t('ui.back') }}
       </Button>
     </template>
   </Dialog>
@@ -757,7 +757,7 @@
     <template #header>
       <div class="border-b border-border px-6 py-4">
         <div class="text-lg font-semibold text-foreground leading-tight">
-          {{ activeImagePreview?.label || '图片预览' }}
+          {{ activeImagePreview?.label || t('ui.imagePreview') }}
         </div>
       </div>
     </template>
@@ -776,13 +776,15 @@
         variant="outline"
         @click="activeImagePreview = null"
       >
-        关闭
+        {{ t('ui.close') }}
       </Button>
     </template>
   </Dialog>
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+
 import { computed, ref, watch } from 'vue'
 import { Check, Code2, Copy, Loader2, Maximize2, Minimize2, RotateCcw } from 'lucide-vue-next'
 import {
@@ -886,6 +888,8 @@ const emit = defineEmits<{
   'update:requestBodyDraft': [value: string]
 }>()
 
+const { t } = useI18n()
+
 const endpoints = computed(() => props.endpoints ?? [])
 const modelMappingOptions = computed(() => props.modelMappingOptions ?? [])
 const keyOptions = computed(() => props.keyOptions ?? [])
@@ -898,12 +902,12 @@ const showKeySelector = computed(() => (
   props.keyOptions !== undefined || keyOptionsLoading.value || selectedKeyIds.value.length > 0
 ))
 const keySelectorPlaceholder = computed(() => (
-  keyOptionsLoading.value && keyOptions.value.length === 0 ? '正在加载 Key' : '默认调度（不指定 Key）'
+  keyOptionsLoading.value && keyOptions.value.length === 0 ? t('ui.loadingKeys') : t('ui.defaultSchedulingNoSpecificKey')
 ))
 const keySelectionStatus = computed(() => {
-  if (selectedKeyIds.value.length > 0) return `已选 ${selectedKeyIds.value.length}`
-  if (keyOptionsLoading.value) return '加载中'
-  return '默认'
+  if (selectedKeyIds.value.length > 0) return t('providers.migration.selected7c3915', { value: String(selectedKeyIds.value.length) })
+  if (keyOptionsLoading.value) return t('ui.loading')
+  return t('ui.default844b8cc')
 })
 const requestedModelName = computed(() => props.requestedModelName?.trim() || '')
 const selectedModelMapping = computed(() => props.selectedModelMapping?.trim() || '')
@@ -931,16 +935,16 @@ function handleModelMappingValueChange(value: string) {
 }
 
 const dialogTitle = computed(() => {
-  if (props.result) return '模型测试结果'
-  return '模型测试'
+  if (props.result) return t('ui.modelTestResults')
+  return t('ui.modelTest')
 })
 
 const dialogDescription = computed(() => {
   if (showSetup.value && props.selectingModelName) {
-    return `为 ${props.selectingModelName} 选择端点并编辑测试请求头与请求体`
+    return t('providers.migration.selectAnEndpointAndEdite74516', { value: String(props.selectingModelName) })
   }
   if (props.testing && props.selectedEndpoint) {
-    return `正在通过 ${formatApiFormat(props.selectedEndpoint.api_format)} 测试 ${props.selectingModelName || '模型'}`
+    return t('providers.migration.testingViadfc444', { value: String(formatApiFormat(props.selectedEndpoint.api_format)), value_2: String(props.selectingModelName || t('ui.model')) })
   }
   return ''
 })
@@ -955,7 +959,7 @@ const hasEffectiveModel = computed(() => {
 })
 
 const resultEmptyMessage = computed(() => {
-  if (!props.result) return '没有可用的候选进行测试'
+  if (!props.result) return t('ui.noCandidatesAvailableForTesting')
   if (typeof props.result.error === 'string' && props.result.error.trim()) {
     return formatModelTestDiagnostic(props.result.error)
   }
@@ -963,7 +967,7 @@ const resultEmptyMessage = computed(() => {
   if (typeof rawResult.message === 'string' && rawResult.message.trim()) {
     return formatModelTestDiagnostic(rawResult.message)
   }
-  return '没有可用的候选进行测试'
+  return t('ui.noCandidatesAvailableForTesting')
 })
 const showAllAttempts = ref(false)
 const inspectionTab = ref<'request-headers' | 'request-body' | 'response-headers' | 'response-body'>('request-body')
@@ -1040,41 +1044,41 @@ const testScenario = computed<'pool' | 'custom' | 'direct' | 'provider'>(() => {
 })
 
 const candidateNoun = computed(() => {
-  if (testScenario.value === 'pool') return '账号'
+  if (testScenario.value === 'pool') return t('ui.account')
   if (testScenario.value === 'custom') return 'Key'
-  return '候选'
+  return t('ui.candidate')
 })
 
 const liveEntityLabel = computed(() => {
-  if (testScenario.value === 'pool') return '当前账号'
-  if (testScenario.value === 'custom') return '当前 Key'
-  return '当前候选'
+  if (testScenario.value === 'pool') return t('ui.currentAccount')
+  if (testScenario.value === 'custom') return t('ui.currentKey2126a46')
+  return t('ui.currentCandidate')
 })
 
 const resultEntityLabel = computed(() => {
-  if (testScenario.value === 'pool') return '命中账号'
-  if (testScenario.value === 'custom') return '命中 Key'
-  return '命中候选'
+  if (testScenario.value === 'pool') return t('ui.matchedAccount')
+  if (testScenario.value === 'custom') return t('ui.matchedKey')
+  return t('ui.matchedCandidate')
 })
 
 function buildSummaryItems(summary: SummaryView): SummaryBadgeItem[] {
   const totalLabel = testScenario.value === 'pool'
-    ? '候选账号'
+    ? t('ui.candidateAccount')
     : testScenario.value === 'custom'
-      ? '候选 Key'
-      : '候选'
+      ? t('ui.candidateKey')
+      : t('ui.candidate')
   const successLabel = testScenario.value === 'pool'
-    ? '命中账号'
+    ? t('ui.matchedAccount')
     : testScenario.value === 'custom'
-      ? '命中 Key'
-      : '成功'
-  const failedLabel = testScenario.value === 'pool' ? '失败切换' : '失败'
-  const skippedLabel = testScenario.value === 'pool' ? '调度跳过' : '跳过'
-  const unusedLabel = testScenario.value === 'pool' ? '成功后未执行' : '未执行'
+      ? t('ui.matchedKey')
+      : t('ui.success')
+  const failedLabel = testScenario.value === 'pool' ? t('ui.failover8cd0d36') : t('ui.failed28384d7')
+  const skippedLabel = testScenario.value === 'pool' ? t('ui.skippedByScheduler') : t('ui.skip')
+  const unusedLabel = testScenario.value === 'pool' ? t('ui.notRunAfterSuccess') : t('ui.notRun')
 
   return [
     { key: 'total', label: totalLabel, value: summary.total_candidates, variant: 'secondary' },
-    { key: 'attempted', label: '已尝试', value: summary.attempted, variant: 'outline' },
+    { key: 'attempted', label: t('ui.attempted'), value: summary.attempted, variant: 'outline' },
     { key: 'success', label: successLabel, value: summary.success, variant: 'success' },
     { key: 'failed', label: failedLabel, value: summary.failed, variant: 'destructive' },
     { key: 'skipped', label: skippedLabel, value: summary.skipped, variant: 'secondary' },
@@ -1086,7 +1090,7 @@ const liveSummaryItems = computed(() => buildSummaryItems(liveTraceSummary.value
 const resultSummaryItems = computed(() => buildSummaryItems(resultSummary.value))
 
 const liveProgressText = computed(() => {
-  if (liveTraceSummary.value.total_candidates <= 0) return '准备中'
+  if (liveTraceSummary.value.total_candidates <= 0) return t('ui.preparingb53be09')
   return `${liveTraceSummary.value.completed}/${liveTraceSummary.value.total_candidates}`
 })
 
@@ -1107,7 +1111,7 @@ const activeTraceCandidate = computed(() => {
 
 const liveAccountTitle = computed(() => {
   const candidate = activeTraceCandidate.value
-  if (!candidate) return '等待候选'
+  if (!candidate) return t('ui.waitingForCandidate')
   return candidate.key_account_label || candidate.key_name || candidate.key_preview || '-'
 })
 
@@ -1123,15 +1127,15 @@ const liveAccountMeta = computed(() => {
 
 const liveStatusTitle = computed(() => {
   const candidate = activeTraceCandidate.value
-  if (!candidate) return '正在准备测试请求'
+  if (!candidate) return t('ui.preparingTestRequest')
   if (candidate.status === 'pending' || candidate.status === 'streaming') {
-    return `正在请求 ${formatTraceCandidateIndex(candidate)}`
+    return t('providers.migration.requestinge6d7f8', { value: String(formatTraceCandidateIndex(candidate)) })
   }
   if (candidate.status === 'success') {
-    return `命中 ${formatTraceCandidateIndex(candidate)}`
+    return t('providers.migration.matched5ee71f', { value: String(formatTraceCandidateIndex(candidate)) })
   }
   if (candidate.status === 'unused') {
-    return '成功后未执行'
+    return t('ui.notRunAfterSuccess')
   }
   return statusLabel(candidate.status)
 })
@@ -1177,13 +1181,13 @@ const resultWinningTitle = computed(() => {
   const summary = resultSummary.value
   const keyName = summary.winning_key_name || summary.winning_key_id
   if (keyName) return keyName
-  if (props.result?.success) return `已命中 ${candidateNoun.value}`
-  return `无${resultEntityLabel.value}`
+  if (props.result?.success) return t('providers.migration.matched24a4ab', { value: String(candidateNoun.value) })
+  return t('providers.migration.no3230fd', { value: String(resultEntityLabel.value) })
 })
 
 const resultDispatchTitle = computed(() => {
   const summary = resultSummary.value
-  return `${summary.attempted}/${summary.total_candidates} 已尝试`
+  return t('providers.migration.attempted17ff8b', { value: String(summary.attempted), value_2: String(summary.total_candidates) })
 })
 
 const attemptedEffectiveModelTitle = computed(() => {

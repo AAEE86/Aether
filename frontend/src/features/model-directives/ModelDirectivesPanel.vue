@@ -3,17 +3,17 @@
     <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
       <div>
         <h3 class="text-base font-semibold">
-          推理参数映射
+          {{ t('ui.reasoningParameterMappings') }}
         </h3>
         <p class="mt-1 text-sm text-muted-foreground">
-          按 API 端点配置模型名后缀及其请求参数映射。
+          {{ t('ui.configureModelSuffixesAndRequestParameterMappingsByApiEndpoint') }}
         </p>
       </div>
       <div class="flex items-center">
         <Switch
           :model-value="config.reasoning_effort.enabled"
           :disabled="loading"
-          aria-label="启用推理参数映射"
+          :aria-label="t('ui.enableReasoningParameterMapping')"
           @update:model-value="onReasoningEnabledChange"
         />
       </div>
@@ -21,11 +21,11 @@
 
     <div class="overflow-hidden rounded-lg border">
       <div class="hidden gap-3 border-b bg-muted/40 px-4 py-3 text-xs font-medium text-muted-foreground lg:grid lg:grid-cols-[minmax(0,1fr)_minmax(14rem,1fr)_minmax(0,2fr)_auto]">
-        <div>API 端点</div>
-        <div>模型后缀</div>
-        <div>有效映射</div>
+        <div>{{ t('ui.apiEndpoint') }}</div>
+        <div>{{ t('ui.modelSuffix') }}</div>
+        <div>{{ t('ui.effectiveMapping') }}</div>
         <div class="text-right">
-          状态
+          {{ t('ui.status6320b4a') }}
         </div>
       </div>
       <div class="divide-y">
@@ -36,7 +36,7 @@
         >
           <div class="min-w-0">
             <div class="mb-1 text-xs font-medium text-muted-foreground lg:hidden">
-              API 端点
+              {{ t('ui.apiEndpoint') }}
             </div>
             <div class="text-sm font-medium">
               {{ format.label }}
@@ -47,7 +47,7 @@
           </div>
           <div>
             <div class="mb-1 text-xs font-medium text-muted-foreground lg:hidden">
-              模型后缀
+              {{ t('ui.modelSuffix') }}
             </div>
             <div class="flex items-center gap-1.5">
               <Select
@@ -57,7 +57,7 @@
               >
                 <SelectTrigger
                   class="h-9 min-w-0 flex-1 rounded-lg"
-                  :aria-label="`${format.label} 模型后缀`"
+                  :aria-label="t('ui.valueModelSuffix', { value: format.label })"
                 >
                   <SelectValue />
                 </SelectTrigger>
@@ -77,8 +77,8 @@
                 variant="ghost"
                 class="h-9 w-9 shrink-0 text-muted-foreground"
                 :disabled="loading || !config.reasoning_effort.enabled || !formatConfig(format.key).enabled"
-                :title="`新增 ${format.label} 自定义后缀`"
-                :aria-label="`新增 ${format.label} 自定义后缀`"
+                :title="t('ui.createACustomValueSuffix', { value: format.label })"
+                :aria-label="t('ui.createACustomValueSuffix', { value: format.label })"
                 @click="startAddingSuffix(format.key)"
               >
                 <Plus class="h-4 w-4" />
@@ -93,7 +93,7 @@
                   v-model="customSuffixDrafts[format.key]"
                   class="h-9 min-w-0 flex-1 font-mono text-xs"
                   :disabled="loading"
-                  :aria-label="`${format.label} 自定义后缀名称`"
+                  :aria-label="t('ui.customValueSuffixName', { value: format.label })"
                   placeholder="vendor-option"
                   @keyup.enter="addCustomSuffix(format.key)"
                   @keyup.esc="cancelAddingSuffix(format.key)"
@@ -104,8 +104,8 @@
                   variant="ghost"
                   class="h-9 w-9 shrink-0"
                   :disabled="loading"
-                  :title="`添加 ${format.label} 自定义后缀`"
-                  :aria-label="`添加 ${format.label} 自定义后缀`"
+                  :title="t('ui.addCustomValueSuffix', { value: format.label })"
+                  :aria-label="t('ui.addCustomValueSuffix', { value: format.label })"
                   @click="addCustomSuffix(format.key)"
                 >
                   <Check class="h-4 w-4" />
@@ -115,8 +115,8 @@
                   variant="ghost"
                   class="h-9 w-9 shrink-0 text-muted-foreground"
                   :disabled="loading"
-                  :title="`取消新增 ${format.label} 自定义后缀`"
-                  :aria-label="`取消新增 ${format.label} 自定义后缀`"
+                  :title="t('ui.cancelCreatingACustomValueSuffix', { value: format.label })"
+                  :aria-label="t('ui.cancelCreatingACustomValueSuffix', { value: format.label })"
                   @click="cancelAddingSuffix(format.key)"
                 >
                   <X class="h-4 w-4" />
@@ -134,18 +134,18 @@
               {{ selectedSuffixDescription(format.key) }}
             </p>
             <div class="mt-2 flex items-center justify-between gap-2">
-              <span class="text-xs text-muted-foreground">后缀状态</span>
+              <span class="text-xs text-muted-foreground">{{ t('ui.suffixStatus') }}</span>
               <Switch
                 :model-value="selectedSuffixEnabled(format.key)"
                 :disabled="loading || !config.reasoning_effort.enabled || !formatConfig(format.key).enabled || isPendingCustomSuffix(format.key)"
-                :aria-label="`${format.label} ${selectedSuffixes[format.key] ?? PREFERRED_MODEL_DIRECTIVE_SUFFIX} 后缀`"
+                :aria-label="t('ui.valueValueSuffix', { value: format.label, value2: selectedSuffixes[format.key] ?? PREFERRED_MODEL_DIRECTIVE_SUFFIX })"
                 @update:model-value="value => onSuffixEnabledChange(format.key, value)"
               />
             </div>
           </div>
           <div>
             <div class="mb-1 text-xs font-medium text-muted-foreground lg:hidden">
-              有效映射
+              {{ t('ui.effectiveMapping') }}
             </div>
             <div class="flex items-start gap-2">
               <div class="min-w-0 flex-1">
@@ -154,10 +154,10 @@
                   :model-value="localMappingParams[mappingKey(format.key)]"
                   class="h-24 min-h-24 resize-none overflow-auto font-mono text-xs leading-5"
                   :disabled="loading || !config.reasoning_effort.enabled || !formatConfig(format.key).enabled"
-                  :aria-label="`${format.label} ${selectedSuffixes[format.key] ?? PREFERRED_MODEL_DIRECTIVE_SUFFIX} 映射参数`"
+                  :aria-label="t('modelDirectives.mappingParameters', { format: format.label, suffix: selectedSuffixes[format.key] ?? PREFERRED_MODEL_DIRECTIVE_SUFFIX })"
                   :aria-invalid="Boolean(mappingErrors[mappingKey(format.key)])"
                   :aria-describedby="mappingErrors[mappingKey(format.key)] ? mappingErrorId(format.key) : undefined"
-                  title="有效映射 JSON"
+                  :title="t('modelDirectives.effectiveMappingJson')"
                   placeholder="{}"
                   @update:model-value="value => onMappingDraftChange(format.key, value)"
                 />
@@ -193,8 +193,8 @@
                 variant="ghost"
                 class="h-9 w-9 shrink-0 text-muted-foreground"
                 :disabled="loading || !config.reasoning_effort.enabled || !formatConfig(format.key).enabled || !hasMappingParamChanges(format.key)"
-                :title="`保存 ${format.label} 映射参数`"
-                :aria-label="`保存 ${format.label} 映射参数`"
+                :title="t('ui.saveValueMappingParameters', { value: format.label })"
+                :aria-label="t('ui.saveValueMappingParameters', { value: format.label })"
                 @click="saveMappingParam(format.key)"
               >
                 <Save class="h-4 w-4" />
@@ -202,11 +202,11 @@
             </div>
           </div>
           <div class="flex items-center justify-between gap-3 lg:justify-end">
-            <span class="text-xs font-medium text-muted-foreground lg:hidden">状态</span>
+            <span class="text-xs font-medium text-muted-foreground lg:hidden">{{ t('ui.status6320b4a') }}</span>
             <Switch
               :model-value="formatConfig(format.key).enabled"
               :disabled="loading || !config.reasoning_effort.enabled"
-              :aria-label="`${format.label} 端点参数映射`"
+              :aria-label="t('ui.valueEndpointParameterMapping', { value: format.label })"
               @update:model-value="value => onApiFormatEnabledChange(format.key, value)"
             />
           </div>
@@ -217,6 +217,18 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+const props = defineProps<{
+  config: ModelDirectivesConfig
+  loading: boolean
+}>()
+
+const emit = defineEmits<{
+  save: [value: ModelDirectivesConfig]
+}>()
+
+const { t } = useI18n()
+
 import { reactive, watch } from 'vue'
 import { Check, Plus, RotateCcw, Save, X } from 'lucide-vue-next'
 import Button from '@/components/ui/button.vue'
@@ -244,15 +256,6 @@ import {
   type ReasoningApiFormatConfig,
   type ModelDirectivesConfig,
 } from './modelDirectivesConfig'
-
-const props = defineProps<{
-  config: ModelDirectivesConfig
-  loading: boolean
-}>()
-
-const emit = defineEmits<{
-  save: [value: ModelDirectivesConfig]
-}>()
 
 const selectedSuffixes = reactive<Record<string, string>>({})
 const selectedSuffixTouched = reactive(new Set<string>())
@@ -371,7 +374,7 @@ function suffixLabel(suffix: string): string {
 function selectedSuffixDescription(apiFormat: string): string {
   const suffix = selectedSuffixes[apiFormat] ?? 'low'
   return MODEL_DIRECTIVE_SUFFIX_METADATA[suffix as keyof typeof MODEL_DIRECTIVE_SUFFIX_METADATA]?.description
-    ?? '自定义模型指令'
+    ?? t('modelDirectives.customDirective')
 }
 
 function selectedSuffixEnabled(apiFormat: string): boolean {
@@ -406,20 +409,20 @@ function hasCustomMapping(apiFormat: string): boolean {
 }
 
 function mappingStatus(apiFormat: string): string {
-  if (isPendingCustomSuffix(apiFormat)) return '保存非空映射后启用此后缀'
+  if (isPendingCustomSuffix(apiFormat)) return t('ui.saveANonEmptyMappingToEnableThisSuffix')
   if (hasCustomMapping(apiFormat) && hasBuiltInMapping(apiFormat)) {
-    return '自定义覆盖（已合并显示）'
+    return t('ui.customOverrideMergedView')
   }
-  if (hasCustomMapping(apiFormat)) return '自定义映射'
-  if (hasBuiltInMapping(apiFormat)) return '内置映射预览（运行时按目标模型调整）'
-  return '尚未配置映射'
+  if (hasCustomMapping(apiFormat)) return t('ui.customMapping')
+  if (hasBuiltInMapping(apiFormat)) return t('ui.builtInMappingPreviewAdjustedForTheTargetModelAt')
+  return t('ui.mappingNotConfigured')
 }
 
 function resetMappingTitle(apiFormat: string, formatLabel: string): string {
-  if (isPendingCustomSuffix(apiFormat)) return `删除 ${formatLabel} 待配置后缀`
+  if (isPendingCustomSuffix(apiFormat)) return t('modelDirectives.deletePendingSuffix', { format: formatLabel })
   return hasBuiltInMapping(apiFormat)
-    ? `恢复 ${formatLabel} 内置映射`
-    : `删除 ${formatLabel} 自定义映射`
+    ? t('modelDirectives.restoreBuiltinMapping', { format: formatLabel })
+    : t('modelDirectives.deleteCustomMapping', { format: formatLabel })
 }
 
 function hasMappingParamChanges(apiFormat: string): boolean {
@@ -448,14 +451,14 @@ function addCustomSuffix(apiFormat: string) {
   const rawSuffix = customSuffixDrafts[apiFormat] ?? ''
   const suffix = normalizeModelDirectiveSuffix(rawSuffix)
   if (!suffix || suffix.startsWith('-') || suffix.endsWith('-') || /\s/.test(suffix)) {
-    customSuffixErrors[apiFormat] = '后缀只能包含不带空格的模型名片段'
+    customSuffixErrors[apiFormat] = t('modelDirectives.invalidSuffix')
     return
   }
   if (MODEL_DIRECTIVE_SUFFIXES.includes(suffix as typeof MODEL_DIRECTIVE_SUFFIXES[number])
     && !defaultModelDirectiveSuffixesForApiFormat(apiFormat).includes(
       suffix as typeof MODEL_DIRECTIVE_SUFFIXES[number],
     )) {
-    customSuffixErrors[apiFormat] = '该 API 端点不支持此内置后缀'
+    customSuffixErrors[apiFormat] = t('modelDirectives.unsupportedSuffix')
     return
   }
 
@@ -542,20 +545,20 @@ function saveMappingParam(apiFormat: string) {
     try {
       const parsed = JSON.parse(rawMapping)
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        mappingErrors[key] = '映射参数必须是 JSON 对象'
+        mappingErrors[key] = t('modelDirectives.mappingObjectRequired')
         return
       }
       effectiveMapping = Object.keys(parsed).length > 0
         ? parsed as Record<string, unknown>
         : undefined
     } catch {
-      mappingErrors[key] = 'JSON 格式无效，请修正后再保存'
+      mappingErrors[key] = t('modelDirectives.invalidMappingJson')
       return
     }
   }
 
   if (isPendingCustomSuffix(apiFormat) && !effectiveMapping) {
-    mappingErrors[key] = '自定义后缀必须配置非空 JSON 映射'
+    mappingErrors[key] = t('modelDirectives.nonemptyMappingRequired')
     return
   }
 
@@ -620,4 +623,5 @@ function resetMappingOverride(apiFormat: string) {
     },
   })
 }
+
 </script>

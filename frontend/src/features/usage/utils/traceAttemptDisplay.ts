@@ -1,3 +1,4 @@
+import { translate } from '@/i18n'
 import { getI18nLocale } from '@/i18n'
 import type { CandidateProxy, CandidateRecord, ImageProgress } from '@/api/requestTrace'
 import { formatApiFormat } from '@/api/endpoints/types/api-format'
@@ -12,11 +13,11 @@ export interface AttemptTimeRange {
 // 获取最终状态标签
 export const getFinalStatusLabel = (status: string) => {
   const labels: Record<string, string> = {
-    success: '最终成功',
-    failed: '最终失败',
-    cancelled: '已取消',
-    streaming: '流式传输中',
-    pending: '进行中'
+    get success() { return translate('ui.succeeded') },
+    get failed() { return translate('ui.failed') },
+    get cancelled() { return translate('ui.canceled') },
+    get streaming() { return translate('ui.streaming80abc0b') },
+    get pending() { return translate('ui.inProgress') }
   }
   return labels[status] || status
 }
@@ -169,12 +170,12 @@ export const normalizeImageProgress = (value: unknown): ImageProgress | null => 
 
 export const formatImageProgressPhase = (phase?: string | null): string => {
   const labels: Record<string, string> = {
-    upstream_connecting: '连接上游',
-    upstream_streaming: '上游生成中',
-    upstream_completed: '上游已完成',
-    failed: '失败',
+    get upstream_connecting() { return translate('ui.connectingToUpstream') },
+    get upstream_streaming() { return translate('ui.upstreamGenerating') },
+    get upstream_completed() { return translate('ui.upstreamComplete') },
+    get failed() { return translate('ui.failed28384d7') },
   }
-  if (!phase) return '未知'
+  if (!phase) return translate('chart.unknown')
   return labels[phase] || phase
 }
 
@@ -466,7 +467,7 @@ export const formatAttemptErrorMessage = (message: string, statusCode?: number):
     return formatAttemptErrorMessage(decodeRustDebugString(localSyncInternal[1]), statusCode)
   }
   if (isStreamFinishErrorDiagnostic(normalized)) {
-    return '上游流式响应异常终止：上游返回了错误结束原因（error），已按失败处理'
+    return translate('ui.theUpstreamStreamEndedWithAnErrorFinishReasonError')
   }
   if (/unsupported provider stream event cannot be converted losslessly/i.test(normalized)) {
     return formatUnsupportedStreamEventMessage(normalized)
@@ -530,19 +531,19 @@ export const formatAuthTypeWithPlan = (authType: string, planType?: string): str
 
 export const poolSelectionLabel = (reason: string): string => {
   const labels: Record<string, string> = {
-    sticky: '粘性会话',
+    get sticky() { return translate('ui.stickySession') },
     lru: 'LRU',
-    random: '随机',
-    tiebreak: '随机 (平分)',
+    get random() { return translate('ui.random') },
+    get tiebreak() { return translate('ui.randomEqualWeight') },
   }
   return labels[reason] || reason
 }
 
 export const poolSkipLabel = (type: string): string => {
   const labels: Record<string, string> = {
-    cooldown: '冷却中',
-    cost_exhausted: '额度耗尽',
-    upstream: '上游跳过',
+    get cooldown() { return translate('ui.coolingDown') },
+    get cost_exhausted() { return translate('ui.quotaExhausted') },
+    get upstream() { return translate('ui.upstreamSkipped') },
   }
   return labels[type] || type
 }
@@ -632,15 +633,15 @@ export const formatDuration = (startStr: string, endStr: string): string => {
 // 获取状态标签
 export const getStatusLabel = (status: string) => {
   const labels: Record<string, string> = {
-    available: '可用未尝试',
-    unused: '未使用',
-    pending: '进行中',
-    streaming: '传输中',
-    stream_interrupted: '流中断',
-    success: '成功',
-    failed: '失败',
-    cancelled: '已取消',
-    skipped: '跳过'
+    get available() { return translate('ui.availableNotAttempted') },
+    get unused() { return translate('ui.unusedfa73ed8') },
+    get pending() { return translate('ui.inProgress') },
+    get streaming() { return translate('ui.transferring') },
+    get stream_interrupted() { return translate('ui.streamInterrupted') },
+    get success() { return translate('ui.success') },
+    get failed() { return translate('ui.failed28384d7') },
+    get cancelled() { return translate('ui.canceled') },
+    get skipped() { return translate('ui.skip') }
   }
   return labels[status] || status
 }

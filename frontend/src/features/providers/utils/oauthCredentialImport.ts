@@ -1,3 +1,5 @@
+
+import { translate as t } from '@/i18n'
 export interface OAuthImportCredentials {
   api_key?: string
   token?: string
@@ -355,17 +357,17 @@ export function resolveAgentIdentityAccessToken(input: string): AgentIdentityAcc
   try {
     parsed = JSON.parse(normalized)
   } catch {
-    return { ok: false, message: 'ChatGPT auth/session JSON 格式无效' }
+    return { ok: false, message: t('ui.invalidChatgptAuthSessionJson') }
   }
   if (!isObjectRecord(parsed)) {
-    return { ok: false, message: 'ChatGPT auth/session JSON 缺少 accessToken' }
+    return { ok: false, message: t('ui.chatgptAuthSessionJsonIsMissingAccesstoken') }
   }
 
   const accessToken = normalizeStringField(parsed.accessToken)
     ?? normalizeStringField(parsed.access_token)
   return accessToken
     ? { ok: true, accessToken }
-    : { ok: false, message: 'ChatGPT auth/session JSON 缺少 accessToken' }
+    : { ok: false, message: t('ui.chatgptAuthSessionJsonIsMissingAccesstoken') }
 }
 
 export function isCodexAgentIdentityObject(root: Record<string, unknown>): boolean {

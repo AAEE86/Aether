@@ -41,8 +41,8 @@ describe('ProviderDetailDrawer loading priorities', () => {
   })
 
   it('shows the provider-wide key total in the paginated footer', () => {
-    expect(source).toContain("{{ legacyT('共') }} {{ providerKeysTotal }}")
-    expect(source).not.toContain("{{ legacyT('共') }} {{ allKeys.length }}")
+    expect(source).toContain("{{ t('ui.total76e547a') }} {{ providerKeysTotal }}")
+    expect(source).not.toContain("{{ t('ui.total76e547a') }} {{ allKeys.length }}")
   })
 
   it('does not mount closed child dialogs or blur the page behind the drawer', () => {

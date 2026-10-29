@@ -7,7 +7,7 @@ import { formatCompactNumber } from '@/utils/format'
 import { useI18n } from '@/i18n'
 
 const props = defineProps<{ node: ProxyNode }>()
-const { legacyT } = useI18n()
+const { t } = useI18n()
 
 const hardwareInfo = computed<Record<string, unknown> | null>(() => {
   return normalizeHardwareInfo(props.node.hardware_info)
@@ -91,7 +91,7 @@ const hardwareRows = computed(() => {
 const nativeTooltipText = computed(() =>
   hardwareRows.value.length > 0
     ? hardwareRows.value.map((row) => `${row.label}: ${row.value}`).join('\n')
-    : legacyT('暂无硬件信息上报')
+    : t('ui.noHardwareInfoReported')
 )
 
 const showHardwareInfo = computed(
@@ -173,7 +173,7 @@ function pickString(...values: unknown[]): string {
       <TooltipTrigger as-child>
         <button
           type="button"
-          :aria-label="legacyT('硬件信息')"
+          :aria-label="t('ui.hardwareInfo')"
           :title="nativeTooltipText"
           class="inline-flex items-center justify-center rounded-sm p-0.5 hover:bg-muted/60 transition-colors cursor-pointer"
         >
@@ -189,7 +189,7 @@ function pickString(...values: unknown[]): string {
           v-if="hardwareRows.length === 0"
           class="text-muted-foreground"
         >
-          {{ legacyT('暂无硬件信息上报') }}
+          {{ t('ui.noHardwareInfoReported') }}
         </div>
         <template v-else>
           <div

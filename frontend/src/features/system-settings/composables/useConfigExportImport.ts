@@ -1,3 +1,4 @@
+import { translate } from '@/i18n'
 import { nextTick, ref } from 'vue'
 import type { AxiosProgressEvent } from 'axios'
 import { useToast } from '@/composables/useToast'
@@ -65,11 +66,14 @@ function setImportProgress(
 
 function buildUploadProgressHandler(
   target: { value: ImportProgressState | null },
-  label: string,
+  getLabel: () => string,
 ) {
   return (event: AxiosProgressEvent) => {
+    const label = getLabel()
     if (!event.total) {
-      setImportProgress(target, 15, `${label}上传中：${formatByteSize(event.loaded)}`)
+      setImportProgress(target, 15, translate('feedback.import.uploading', {
+        label, loaded: formatByteSize(event.loaded),
+      }))
       return
     }
 
@@ -77,8 +81,8 @@ function buildUploadProgressHandler(
     const loaded = formatByteSize(event.loaded)
     const total = formatByteSize(event.total)
     const message = event.loaded >= event.total
-      ? `${label}已上传，服务端正在校验并写入数据`
-      : `${label}上传中：${loaded} / ${total}`
+      ? translate('feedback.import.uploadValidating', { label })
+      : translate('feedback.import.uploading', { label, loaded: `${loaded} / ${total}` })
     setImportProgress(target, uploadPercent, message)
   }
 }
@@ -142,9 +146,9 @@ export function useConfigExportImport(systemConfig: { value: Pick<SystemConfig, 
         data,
         `${systemConfig.value.site_name.toLowerCase()}-config-${new Date().toISOString().slice(0, 10)}.json`,
       )
-      success('配置已导出')
+      success(translate('ui.configurationExported'))
     } catch (err) {
-      error('导出配置失败')
+      error(translate('ui.failedToExportConfiguration'))
       log.error('导出配置失败:', err)
     } finally {
       exportLoading.value = false
@@ -206,23 +210,23 @@ export function useConfigExportImport(systemConfig: { value: Pick<SystemConfig, 
     if (!importPreview.value) return
 
     importLoading.value = true
-    setImportProgress(importProgress, 5, '准备提交配置数据')
+    setImportProgress(importProgress, 5, translate('feedback.import.preparing', { label: translate('ui.configurationData') }))
     await nextTick()
     try {
       const result = await adminApi.importConfig({
         ...importPreview.value,
         merge_mode: mergeMode.value,
       }, {
-        onUploadProgress: buildUploadProgressHandler(importProgress, '配置数据'),
+        onUploadProgress: buildUploadProgressHandler(importProgress, () => translate('ui.configurationData')),
       })
-      setImportProgress(importProgress, 100, '配置数据导入完成')
+      setImportProgress(importProgress, 100, translate('feedback.import.completed', { label: translate('ui.configurationData') }))
       importResult.value = result
       importDialogOpen.value = false
       mergeModeSelectOpen.value = false
       importResultDialogOpen.value = true
-      success('配置导入成功')
+      success(translate('ui.configurationImported'))
     } catch (err: unknown) {
-      error(parseApiError(err, '导入配置失败'))
+      error(parseApiError(err, translate('ui.failedToImportConfiguration')))
       log.error('导入配置失败:', err)
     } finally {
       importLoading.value = false
@@ -239,9 +243,9 @@ export function useConfigExportImport(systemConfig: { value: Pick<SystemConfig, 
         data,
         `${systemConfig.value.site_name.toLowerCase()}-users-${new Date().toISOString().slice(0, 10)}.json`,
       )
-      success('用户数据已导出')
+      success(translate('ui.userDataExported'))
     } catch (err) {
-      error('导出用户数据失败')
+      error(translate('ui.failedToExportUserData'))
       log.error('导出用户数据失败:', err)
     } finally {
       exportUsersLoading.value = false
@@ -313,23 +317,23 @@ export function useConfigExportImport(systemConfig: { value: Pick<SystemConfig, 
     if (!importUsersPreview.value) return
 
     importUsersLoading.value = true
-    setImportProgress(importUsersProgress, 5, '准备提交用户数据')
+    setImportProgress(importUsersProgress, 5, translate('feedback.import.preparing', { label: translate('ui.userData') }))
     await nextTick()
     try {
       const result = await adminApi.importUsers({
         ...importUsersPreview.value,
         merge_mode: usersMergeMode.value,
       }, {
-        onUploadProgress: buildUploadProgressHandler(importUsersProgress, '用户数据'),
+        onUploadProgress: buildUploadProgressHandler(importUsersProgress, () => translate('ui.userData')),
       })
-      setImportProgress(importUsersProgress, 100, '用户数据导入完成')
+      setImportProgress(importUsersProgress, 100, translate('feedback.import.completed', { label: translate('ui.userData') }))
       importUsersResult.value = result
       importUsersDialogOpen.value = false
       usersMergeModeSelectOpen.value = false
       importUsersResultDialogOpen.value = true
-      success('用户数据导入成功')
+      success(translate('ui.userDataImportedc36db05'))
     } catch (err: unknown) {
-      error(parseApiError(err, '导入用户数据失败'))
+      error(parseApiError(err, translate('ui.failedToImportUserData')))
       log.error('导入用户数据失败:', err)
     } finally {
       importUsersLoading.value = false
@@ -346,9 +350,9 @@ export function useConfigExportImport(systemConfig: { value: Pick<SystemConfig, 
         data,
         `${systemConfig.value.site_name.toLowerCase()}-data-${new Date().toISOString().slice(0, 10)}.json`,
       )
-      success('完整备份已导出')
+      success(translate('ui.fullBackupExported'))
     } catch (err) {
-      error('导出完整备份失败')
+      error(translate('ui.failedToExportFullBackup'))
       log.error('导出完整备份失败:', err)
     } finally {
       exportAggregateLoading.value = false
@@ -417,23 +421,23 @@ export function useConfigExportImport(systemConfig: { value: Pick<SystemConfig, 
     if (!aggregateImportPreview.value) return
 
     importAggregateLoading.value = true
-    setImportProgress(importAggregateProgress, 5, '准备提交完整备份')
+    setImportProgress(importAggregateProgress, 5, translate('feedback.import.preparing', { label: translate('ui.fullBackup') }))
     await nextTick()
     try {
       const result = await adminApi.importAggregateData({
         ...aggregateImportPreview.value,
         merge_mode: aggregateMergeMode.value,
       }, {
-        onUploadProgress: buildUploadProgressHandler(importAggregateProgress, '完整备份'),
+        onUploadProgress: buildUploadProgressHandler(importAggregateProgress, () => translate('ui.fullBackup')),
       })
-      setImportProgress(importAggregateProgress, 100, '完整备份导入完成')
+      setImportProgress(importAggregateProgress, 100, translate('feedback.import.completed', { label: translate('ui.fullBackup') }))
       aggregateImportResult.value = result
       aggregateImportDialogOpen.value = false
       aggregateMergeModeSelectOpen.value = false
       aggregateImportResultDialogOpen.value = true
-      success('完整备份导入成功')
+      success(translate('ui.fullBackupImporteda965fb8'))
     } catch (err: unknown) {
-      error(parseApiError(err, '导入完整备份失败'))
+      error(parseApiError(err, translate('ui.failedToImportFullBackup')))
       log.error('导入完整备份失败:', err)
     } finally {
       importAggregateLoading.value = false

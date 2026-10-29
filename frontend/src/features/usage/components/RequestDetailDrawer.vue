@@ -12,7 +12,7 @@
       <div class="flex items-center justify-between gap-2 sm:gap-4 mb-3">
         <div class="flex min-w-0 flex-1 items-center gap-2 sm:gap-3 flex-wrap">
           <h3 class="text-lg font-semibold">
-            请求详情
+            {{ t('ui.requestDetails') }}
           </h3>
           <UsageModelDisplay
             v-if="headerModelRecord"
@@ -81,7 +81,7 @@
             variant="ghost"
             size="icon"
             class="h-8 w-8"
-            title="回放请求"
+            :title="t('ui.replayRequest')"
             :disabled="loading"
             @click="openReplayDialog"
           >
@@ -104,7 +104,7 @@
             variant="ghost"
             size="icon"
             class="h-8 w-8"
-            title="关闭"
+            :title="t('ui.close')"
             @click="handleClose"
           >
             <X class="w-4 h-4" />
@@ -128,7 +128,7 @@
         <span class="hidden opacity-40 sm:inline">|</span>
         <span>{{ formatApiFormat(detail.api_format) }}</span>
         <span class="hidden opacity-40 sm:inline">|</span>
-        <span>用户: {{ detail.user?.username || 'Unknown' }}</span>
+        <span>{{ t('ui.users') }} {{ detail.user?.username || 'Unknown' }}</span>
       </div>
     </div>
 
@@ -229,7 +229,7 @@
                   <!-- cURL 复制（仅在请求头/请求体 Tab） -->
                   <template v-if="['request-headers', 'request-body'].includes(activeTab)">
                     <button
-                      :title="curlCopied ? '已复制 cURL' : '复制 cURL'"
+                      :title="curlCopied ? t('ui.curlCopied') : t('ui.copyCurl')"
                       class="p-1 rounded transition-colors text-muted-foreground hover:bg-muted"
                       :disabled="curlCopying"
                       @click="copyCurlCommand"
@@ -249,7 +249,7 @@
                   <!-- 请求体/响应体专用：JSON/对话 视图切换 -->
                   <template v-if="supportsConversationView">
                     <button
-                      :title="contentViewMode === 'json' ? '切换到对话视图' : '切换到 JSON 视图'"
+                      :title="contentViewMode === 'json' ? t('ui.switchToConversationView') : t('ui.switchToJsonView')"
                       class="p-1 rounded transition-colors"
                       :class="hasValidConversation || contentViewMode === 'conversation'
                         ? 'text-muted-foreground hover:bg-muted'
@@ -271,7 +271,7 @@
                   <!-- 请求头/响应头：对比模式 -->
                   <template v-if="canCompare">
                     <button
-                      title="对比"
+                      :title="t('ui.compare')"
                       class="p-1 rounded transition-colors"
                       :class="viewMode === 'compare' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'"
                       @click="viewMode = 'compare'"
@@ -284,7 +284,7 @@
                   <template v-if="showDataSourceToggle">
                     <div class="w-px h-3.5 bg-border mx-0.5" />
                     <button
-                      title="客户端"
+                      :title="t('ui.client')"
                       class="p-1 rounded transition-colors"
                       :class="activeDataSource === 'client' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'"
                       @click="setDataSource('client')"
@@ -292,7 +292,7 @@
                       <Monitor class="w-3.5 h-3.5" />
                     </button>
                     <button
-                      title="提供商"
+                      :title="t('nav.providers')"
                       class="p-1 rounded transition-colors"
                       :class="activeDataSource === 'provider' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted'"
                       @click="setDataSource('provider')"
@@ -345,8 +345,7 @@
                       class="mt-3 h-8 border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
                       @click="retryBodyContentLoad"
                     >
-                      <RefreshCw class="mr-1.5 h-3.5 w-3.5" />
-                      重试
+                      <RefreshCw class="mr-1.5 h-3.5 w-3.5" /> {{ t('vscodex.connection.retry') }}
                     </Button>
                   </div>
                   <BodyConversationContent
@@ -354,7 +353,7 @@
                     :body-document="currentRequestBody"
                     kind="request"
                     :api-format="currentRequestBodyApiFormat"
-                    empty-message="无请求体信息"
+                    :empty-message="t('ui.noRequestBodyInformation')"
                     @load-error="handleBodyDocumentError"
                   />
                   <JsonContent
@@ -364,7 +363,7 @@
                     :view-mode="viewMode"
                     :expand-depth="currentExpandDepth"
                     :is-dark="isDark"
-                    empty-message="无请求体信息"
+                    :empty-message="t('ui.noRequestBodyInformation')"
                     @load-error="handleBodyDocumentError"
                   />
                 </TabsContent>
@@ -385,9 +384,9 @@
                     :is-dark="isDark"
                     :client-headers="detail.client_response_headers"
                     :provider-headers="detail.response_headers"
-                    client-label="客户端响应头"
-                    provider-label="提供商响应头"
-                    empty-message="无响应头信息"
+                    :client-label="t('ui.clientResponseHeaders')"
+                    :provider-label="t('ui.providerResponseHeaders')"
+                    :empty-message="t('ui.noResponseHeadersaf5d1b5')"
                   />
                   <JsonContent
                     v-else
@@ -395,7 +394,7 @@
                     :view-mode="viewMode"
                     :expand-depth="currentExpandDepth"
                     :is-dark="isDark"
-                    empty-message="无响应头信息"
+                    :empty-message="t('ui.noResponseHeadersaf5d1b5')"
                   />
                 </TabsContent>
 
@@ -424,8 +423,7 @@
                       class="mt-3 h-8 border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
                       @click="retryBodyContentLoad"
                     >
-                      <RefreshCw class="mr-1.5 h-3.5 w-3.5" />
-                      重试
+                      <RefreshCw class="mr-1.5 h-3.5 w-3.5" /> {{ t('vscodex.connection.retry') }}
                     </Button>
                   </div>
                   <BodyConversationContent
@@ -433,7 +431,7 @@
                     :body-document="currentResponseBody"
                     kind="response"
                     :api-format="currentResponseBodyApiFormat"
-                    empty-message="无响应体信息"
+                    :empty-message="t('ui.noResponseBodyInformation')"
                     @load-error="handleBodyDocumentError"
                   />
                   <JsonContent
@@ -443,7 +441,7 @@
                     :view-mode="viewMode"
                     :expand-depth="currentExpandDepth"
                     :is-dark="isDark"
-                    empty-message="无响应体信息"
+                    :empty-message="t('ui.noResponseBodyInformation')"
                     @load-error="handleBodyDocumentError"
                   />
                 </TabsContent>
@@ -457,7 +455,7 @@
                     :view-mode="viewMode"
                     :expand-depth="currentExpandDepth"
                     :is-dark="isDark"
-                    empty-message="无元数据信息"
+                    :empty-message="t('ui.noMetadata')"
                   />
                 </TabsContent>
               </JsonContentPanel>
@@ -478,6 +476,8 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+
 import { ref, shallowRef, watch, computed, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import axios from 'axios'
 import Button from '@/components/ui/button.vue'
@@ -599,6 +599,8 @@ const emit = defineEmits<{
     updatedAt?: string | null
   }]
 }>()
+
+const { t } = useI18n()
 
 const loading = ref(false)
 const error = ref<string | null>(null)
@@ -858,8 +860,8 @@ let timelineMountTimer: number | null = null
 const fullRequestId = computed(() => detail.value?.request_id || detail.value?.id || '-')
 const displayRequestId = computed(() => formatShortRequestId(fullRequestId.value))
 const refreshButtonTitle = computed(() => {
-  if (autoRefreshing.value) return '停止自动刷新'
-  return isRequestCompleted() ? '刷新' : '开启自动刷新'
+  if (autoRefreshing.value) return t('ui.stopAutomaticRefresh')
+  return isRequestCompleted() ? t('ui.refresh') : t('ui.turnOnAutoRefresh')
 })
 const displayInputTokens = computed(() => {
   if (!detail.value) return 0
@@ -1295,7 +1297,7 @@ const activeJsonPanelData = computed(() => {
 })
 
 const activeJsonPanelTitle = computed(() => {
-  if (viewMode.value === 'compare') return '对比'
+  if (viewMode.value === 'compare') return t('ui.compare')
   if (supportsConversationView.value && contentViewMode.value === 'conversation') return 'Chat'
   return 'JSON'
 })
@@ -1318,11 +1320,11 @@ const hasValidConversation = computed(() => {
 })
 
 const tabs = [
-  { name: 'request-headers', label: '请求头' },
-  { name: 'request-body', label: '请求体' },
-  { name: 'response-headers', label: '响应头' },
-  { name: 'response-body', label: '响应体' },
-  { name: 'metadata', label: '元数据' },
+  { name: 'request-headers', get label() { return t('ui.requestHeaders') } },
+  { name: 'request-body', get label() { return t('ui.requestBody') } },
+  { name: 'response-headers', get label() { return t('ui.responseHeaders') } },
+  { name: 'response-body', get label() { return t('ui.responseBody') } },
+  { name: 'metadata', get label() { return t('ui.metadata') } },
 ]
 
 function getDefaultDataSourceForTab(tab: string): 'client' | 'provider' {
@@ -1622,7 +1624,7 @@ async function loadDetail(id: string, silent = false) {
     if (requestId !== loadDetailRequestId) return
     log.error('Failed to load request detail:', err)
     if (!silent) {
-      error.value = '加载请求详情失败'
+      error.value = t('ui.failedToLoadRequestDetails')
     }
   } finally {
     if (!silent && requestId === loadDetailRequestId) {

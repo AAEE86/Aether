@@ -10,7 +10,7 @@
             <!-- 左侧：标题 -->
             <div class="flex min-w-0 items-baseline gap-2">
               <h3 class="text-sm sm:text-base font-semibold shrink-0">
-                模型管理
+                {{ t('nav.modelManagement') }}
               </h3>
               <span
                 v-if="selectedBatchManageModelIds.size > 0"
@@ -30,7 +30,7 @@
                   id="model-search"
                   v-model="searchQuery"
                   type="text"
-                  placeholder="搜索模型名称..."
+                  :placeholder="t('ui.searchModels')"
                   class="w-32 sm:w-44 pl-8 pr-3 h-8 text-sm bg-muted/30 border-border/50 focus:border-primary/50 transition-colors"
                 />
               </div>
@@ -55,7 +55,7 @@
                 variant="ghost"
                 size="icon"
                 class="h-8 w-8"
-                title="创建模型"
+                :title="t('ui.createModel')"
                 @click="openCreateModelDialog"
               >
                 <Plus class="w-3.5 h-3.5" />
@@ -82,23 +82,23 @@
                     data-testid="model-select-page-desktop"
                     @update:checked="toggleCurrentModelPageSelection($event === true)"
                   />
-                  <span>模型名称</span>
+                  <span>{{ t('ui.modelName') }}</span>
                 </div>
               </TableHead>
               <TableHead class="w-[160px] text-center">
-                价格 ($/M)
+                {{ t('ui.priceM') }}
               </TableHead>
               <TableHead class="w-[80px] text-center">
-                提供商
+                {{ t('nav.providers') }}
               </TableHead>
               <TableHead class="w-[80px] text-center">
-                调用次数
+                {{ t('ui.callCount') }}
               </TableHead>
               <TableHead class="w-[70px]">
-                状态
+                {{ t('ui.status6320b4a') }}
               </TableHead>
               <TableHead class="w-[140px] text-center">
-                操作
+                {{ t('ui.actionsed31fbb') }}
               </TableHead>
             </TableRow>
           </TableHeader>
@@ -116,7 +116,7 @@
                 colspan="6"
                 class="text-center py-8 text-muted-foreground"
               >
-                没有找到匹配的模型
+                {{ t('ui.noMatchingModelsFound') }}
               </TableCell>
             </TableRow>
             <template v-else>
@@ -146,7 +146,7 @@
                         <span class="truncate">{{ model.name }}</span>
                         <button
                           class="p-0.5 rounded hover:bg-muted transition-colors shrink-0"
-                          title="复制模型 ID"
+                          :title="t('ui.copyModelId')"
                           @click.stop="copyToClipboard(model.name)"
                         >
                           <Copy class="w-3 h-3" />
@@ -168,17 +168,17 @@
                       <span
                         v-if="hasTieredPricing(model)"
                         class="ml-1 text-muted-foreground"
-                        title="阶梯计费"
-                      >[阶梯]</span>
+                        :title="t('ui.tieredPricing')"
+                      >{{ t('ui.tiered') }}</span>
                     </div>
                     <!-- 按次计费 -->
                     <div v-if="model.default_price_per_request && model.default_price_per_request > 0">
-                      <span class="text-muted-foreground">按次:</span>
-                      <span class="font-mono ml-1">${{ model.default_price_per_request.toFixed(3) }}/次</span>
+                      <span class="text-muted-foreground">{{ t('ui.perRequest5b310fa') }}</span>
+                      <span class="font-mono ml-1">${{ model.default_price_per_request.toFixed(3) }}{{ t('ui.requestad9c0d7') }}</span>
                     </div>
                     <!-- 视频费用计费 -->
                     <div v-if="hasVideoPricing(model)">
-                      <span class="text-muted-foreground">视频:</span>
+                      <span class="text-muted-foreground">{{ t('ui.video61a56bb') }}</span>
                       <span
                         class="font-mono ml-1"
                         :title="getVideoPricingTooltip(model)"
@@ -203,7 +203,7 @@
                 </TableCell>
                 <TableCell>
                   <Badge :variant="model.is_active ? 'default' : 'secondary'">
-                    {{ model.is_active ? '活跃' : '停用' }}
+                    {{ model.is_active ? t('ui.activee85e590') : t('ui.disable4e6fd0e') }}
                   </Badge>
                 </TableCell>
                 <TableCell>
@@ -212,7 +212,7 @@
                       variant="ghost"
                       size="icon"
                       class="h-8 w-8"
-                      title="查看详情"
+                      :title="t('ui.viewDetails')"
                       @click.stop="selectModel(model)"
                     >
                       <Eye class="w-4 h-4" />
@@ -221,7 +221,7 @@
                       variant="ghost"
                       size="icon"
                       class="h-8 w-8"
-                      title="编辑模型"
+                      :title="t('ui.editModel')"
                       @click.stop="editModel(model)"
                     >
                       <Edit class="w-4 h-4" />
@@ -230,7 +230,7 @@
                       variant="ghost"
                       size="icon"
                       class="h-8 w-8"
-                      :title="model.is_active ? '停用模型' : '启用模型'"
+                      :title="model.is_active ? t('ui.disableModel') : t('ui.enableModel')"
                       @click.stop="toggleModelStatus(model)"
                     >
                       <Power class="w-4 h-4" />
@@ -239,7 +239,7 @@
                       variant="ghost"
                       size="icon"
                       class="h-8 w-8"
-                      title="删除模型"
+                      :title="t('ui.deleteModel')"
                       @click.stop="deleteModel(model)"
                     >
                       <Trash2 class="w-4 h-4" />
@@ -281,7 +281,7 @@
                       :variant="model.is_active ? 'default' : 'secondary'"
                       class="text-xs shrink-0"
                     >
-                      {{ model.is_active ? '活跃' : '停用' }}
+                      {{ model.is_active ? t('ui.activee85e590') : t('ui.disable4e6fd0e') }}
                     </Badge>
                   </div>
                   <div class="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
@@ -328,8 +328,8 @@
 
             <!-- 第二行：统计信息 -->
             <div class="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-              <span>提供商 {{ model.active_provider_count || 0 }}/{{ model.provider_count || 0 }}</span>
-              <span>调用 {{ formatUsageCount(model.usage_count || 0) }}</span>
+              <span>{{ t('nav.providers') }} {{ model.active_provider_count || 0 }}/{{ model.provider_count || 0 }}</span>
+              <span>{{ t('ui.calls') }} {{ formatUsageCount(model.usage_count || 0) }}</span>
               <span
                 v-if="getFirstTierPrice(model, 'input') || getFirstTierPrice(model, 'output')"
                 class="font-mono"
@@ -476,7 +476,6 @@ import { formatUsageCount } from '@/utils/format'
 import {
   cloneTieredPricingConfig,
 } from '@/features/models/components/global-model-form-helpers'
-
 
 interface ModelProviderDisplay {
   id: string
@@ -677,7 +676,7 @@ async function loadGlobalModels(options: { cacheTtlMs?: number } = {}) {
   } catch (err: unknown) {
     if (requestId !== globalModelsRequestId) return
     log.error('加载模型失败:', err)
-    showError(parseApiError(err, '加载模型失败'), '加载模型失败')
+    showError(parseApiError(err, t('ui.failedToLoadModels')), t('ui.failedToLoadModels'))
   } finally {
     if (requestId === globalModelsRequestId) {
       loading.value = false
@@ -762,7 +761,7 @@ async function loadModelProviders(_globalModelId: string) {
   } catch (err: unknown) {
     if (requestId !== modelProvidersRequestId) return
     log.error('加载关联提供商失败:', err)
-    showError(parseApiError(err, '加载关联提供商失败'), '错误')
+    showError(parseApiError(err, t('ui.failedToLoadLinkedProviders')), t('ui.error'))
     selectedModelProviders.value = []
   } finally {
     if (requestId === modelProvidersRequestId) {
@@ -811,7 +810,7 @@ async function linkProvidersToModel(providerIds: string[]) {
 
     // 显示关联结果
     if (result.errors.length > 0) {
-      showError(`${result.errors.length} 个提供商关联失败`, '部分失败')
+      showError(`${result.errors.length} 个提供商关联失败`, t('ui.someOperationsFailed'))
     } else {
       success(`${providerIds.length} 个提供商已关联`)
     }
@@ -821,7 +820,7 @@ async function linkProvidersToModel(providerIds: string[]) {
     await loadGlobalModels()
     modelDetailDrawerRef.value?.refreshRoutingData?.()
   } catch (err: unknown) {
-    showError(parseApiError(err, '关联失败'), '错误')
+    showError(parseApiError(err, t('ui.failedToLink')), t('ui.error'))
   }
 }
 
@@ -869,7 +868,7 @@ async function handleEditProviderSaved() {
 // 切换关联提供商状态
 async function toggleProviderStatus(provider: ModelProviderDisplay) {
   if (!provider.model_id) {
-    showError('缺少模型 ID')
+    showError(t('ui.modelIdIsMissing'))
     return
   }
 
@@ -878,24 +877,24 @@ async function toggleProviderStatus(provider: ModelProviderDisplay) {
     const newStatus = !provider.is_active
     await updateModel(provider.id, provider.model_id, { is_active: newStatus })
     provider.is_active = newStatus
-    success(newStatus ? '已启用此关联提供商' : '已停用此关联提供商')
+    success(newStatus ? t('ui.linkedProviderEnabled') : t('ui.linkedProviderDisabled'))
     // 刷新路由数据
     modelDetailDrawerRef.value?.refreshRoutingData?.()
   } catch (err: unknown) {
-    showError(parseApiError(err, '更新状态失败'))
+    showError(parseApiError(err, t('ui.failedToUpdateStatus')))
   }
 }
 
 // 删除关联提供商
 async function confirmDeleteProviderImplementation(provider: ModelProviderDisplay) {
   if (!provider.model_id) {
-    showError('缺少模型 ID')
+    showError(t('ui.modelIdIsMissing'))
     return
   }
 
   const confirmed = await confirmDanger(
     `确定要删除 ${provider.name} 的模型关联吗？\n\n此操作不可恢复！`,
-    '删除关联提供商'
+    t('ui.removeLinkedProvider')
   )
   if (!confirmed) return
 
@@ -910,7 +909,7 @@ async function confirmDeleteProviderImplementation(provider: ModelProviderDispla
     // 刷新路由数据
     modelDetailDrawerRef.value?.refreshRoutingData?.()
   } catch (err: unknown) {
-    showError(parseApiError(err, '删除模型失败'))
+    showError(parseApiError(err, t('ui.failedToDeleteModel')))
   }
 }
 
@@ -953,20 +952,20 @@ function handleModelPricingSynced(model: GlobalModelResponse) {
 async function deleteModel(model: GlobalModelResponse) {
   const confirmed = await confirmDanger(
     `确定删除模型 "${model.name}" 吗？\n\n此操作不可撤销。`,
-    '删除模型'
+    t('ui.deleteModel')
   )
   if (!confirmed) return
 
   try {
     await deleteGlobalModel(model.id)
-    success('模型删除成功')
+    success(t('ui.modelDeleted'))
     if (selectedModel.value?.id === model.id) {
       selectedModel.value = null
     }
     setBatchManageModelSelection(model.id, false)
     await loadGlobalModels()
   } catch (err: unknown) {
-    showError(parseApiError(err, '删除失败'), '删除失败')
+    showError(parseApiError(err, t('ui.deletionFailed')), t('ui.deletionFailed'))
   }
 }
 
@@ -974,9 +973,9 @@ async function toggleModelStatus(model: GlobalModelResponse) {
   try {
     await updateGlobalModel(model.id, { is_active: !model.is_active })
     model.is_active = !model.is_active
-    success(model.is_active ? '模型已启用' : '模型已停用')
+    success(model.is_active ? t('ui.modelEnabled') : t('ui.modelDisabledda3c032'))
   } catch (err: unknown) {
-    showError(parseApiError(err, '操作失败'), '操作失败')
+    showError(parseApiError(err, t('ui.operationFailed')), t('ui.operationFailed'))
   }
 }
 

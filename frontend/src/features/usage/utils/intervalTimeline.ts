@@ -1,3 +1,4 @@
+import { translate } from '@/i18n'
 import type { DateRangeParams } from '../types'
 
 // 请求间隔时间线按所选时间范围折算的小时窗口
@@ -35,7 +36,7 @@ export function getIntervalTimelineHours(dateRange: DateRangeParams): number {
 }
 
 export function formatIntervalTimelineWindow(hours: number): string {
-  if (hours === 24) return '最近24小时'
+  if (hours === 24) return translate('ui.last24Hours')
   if (hours % 24 === 0) return `最近${hours / 24}天`
   return `最近${hours}小时`
 }

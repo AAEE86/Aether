@@ -15,7 +15,7 @@
               {{ stats?.total ?? '-' }}
             </p>
             <p class="text-xs text-muted-foreground">
-              总任务数
+              {{ t('ui.totalTasks') }}
             </p>
           </div>
         </div>
@@ -36,7 +36,7 @@
               {{ runningCount || '-' }}
             </p>
             <p class="text-xs text-muted-foreground">
-              处理中
+              {{ t('ui.processing694b71b') }}
             </p>
           </div>
         </div>
@@ -54,7 +54,7 @@
               {{ stats?.by_status?.succeeded ?? '-' }}
             </p>
             <p class="text-xs text-muted-foreground">
-              已完成
+              {{ t('site.home.status.completed') }}
             </p>
           </div>
         </div>
@@ -72,7 +72,7 @@
               {{ stats?.registered_tasks ?? '-' }}
             </p>
             <p class="text-xs text-muted-foreground">
-              已注册
+              {{ t('ui.registered') }}
             </p>
           </div>
         </div>
@@ -88,7 +88,7 @@
       <div class="px-4 sm:px-6 py-3.5 border-b border-border/60">
         <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <h3 class="text-base font-semibold">
-            异步任务
+            {{ t('nav.asyncTasks') }}
           </h3>
           <div class="flex items-center gap-2">
             <!-- 状态筛选 -->
@@ -96,32 +96,32 @@
               v-model="filterStatus"
             >
               <SelectTrigger class="w-28 h-8 text-xs border-border/60">
-                <SelectValue placeholder="状态" />
+                <SelectValue :placeholder="t('ui.status6320b4a')" />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">
-                  全部状态
+                  {{ t('ui.allStatuses') }}
                 </SelectItem>
                 <SelectItem value="queued">
-                  排队中
+                  {{ t('ui.queuedd6f766f') }}
                 </SelectItem>
                 <SelectItem value="running">
-                  运行中
+                  {{ t('ui.running1f0eb99') }}
                 </SelectItem>
                 <SelectItem value="retrying">
-                  重试中
+                  {{ t('ui.retrying') }}
                 </SelectItem>
                 <SelectItem value="succeeded">
-                  成功
+                  {{ t('ui.success') }}
                 </SelectItem>
                 <SelectItem value="failed">
-                  失败
+                  {{ t('ui.failed28384d7') }}
                 </SelectItem>
                 <SelectItem value="cancelled">
-                  已取消
+                  {{ t('ui.canceled') }}
                 </SelectItem>
                 <SelectItem value="skipped">
-                  已跳过
+                  {{ t('ui.skipped71e95b2') }}
                 </SelectItem>
               </SelectContent>
             </Select>
@@ -129,7 +129,7 @@
             <Input
               v-model="filterModel"
               type="text"
-              placeholder="任务 Key..."
+              :placeholder="t('ui.taskKey')"
               class="w-32 h-8 text-xs"
             />
             <!-- 刷新按钮 -->
@@ -156,7 +156,7 @@
       >
         <Loader2 class="w-8 h-8 animate-spin mx-auto text-muted-foreground" />
         <p class="mt-2 text-sm text-muted-foreground">
-          加载中...
+          {{ t('common.loading') }}
         </p>
       </div>
 
@@ -167,7 +167,7 @@
       >
         <Zap class="w-12 h-12 mx-auto text-muted-foreground/50" />
         <p class="mt-2 text-sm text-muted-foreground">
-          暂无异步任务
+          {{ t('ui.noAsynchronousTasks') }}
         </p>
       </div>
 
@@ -179,22 +179,22 @@
         <TableHeader>
           <TableRow>
             <TableHead class="w-[25%]">
-              任务
+              {{ t('ui.task') }}
             </TableHead>
             <TableHead class="w-[15%]">
-              {{ isAdmin ? '用户/Provider' : 'Provider' }}
+              {{ isAdmin ? t('ui.userProvider') : 'Provider' }}
             </TableHead>
             <TableHead class="w-[12%]">
-              状态
+              {{ t('ui.status6320b4a') }}
             </TableHead>
             <TableHead class="w-[10%]">
-              参数
+              {{ t('ui.parameters') }}
             </TableHead>
             <TableHead class="w-[15%]">
-              时间
+              {{ t('ui.time') }}
             </TableHead>
             <TableHead class="w-[8%] text-center">
-              操作
+              {{ t('ui.actionsed31fbb') }}
             </TableHead>
           </TableRow>
         </TableHeader>
@@ -305,7 +305,7 @@
                   variant="ghost"
                   size="icon"
                   class="h-7 w-7"
-                  title="任务详情"
+                  :title="t('ui.taskDetails')"
                   @click.stop="openTaskDetail(task)"
                 >
                   <Eye class="w-4 h-4" />
@@ -315,7 +315,7 @@
                   variant="ghost"
                   size="icon"
                   class="h-7 w-7"
-                  title="使用记录"
+                  :title="t('nav.usageRecords')"
                   @click.stop="openUsageRecord(task)"
                 >
                   <ExternalLink class="w-4 h-4" />
@@ -410,8 +410,7 @@
               class="h-7 text-xs"
               @click.stop="openUsageRecord(task)"
             >
-              <ExternalLink class="w-3.5 h-3.5 mr-1" />
-              使用记录
+              <ExternalLink class="w-3.5 h-3.5 mr-1" /> {{ t('nav.usageRecords') }}
             </Button>
             <Button
               v-if="authStore.canOperateAdmin && canCancel(task.status)"
@@ -420,8 +419,7 @@
               class="h-7 text-xs text-red-500 border-red-200 hover:bg-red-50"
               @click.stop="cancelTask(task)"
             >
-              <XCircle class="w-3.5 h-3.5 mr-1" />
-              取消
+              <XCircle class="w-3.5 h-3.5 mr-1" /> {{ t('common.cancel') }}
             </Button>
           </div>
         </div>
@@ -453,7 +451,7 @@
           <div class="flex items-center justify-between gap-4 mb-3">
             <div class="flex items-center gap-3 flex-wrap">
               <h3 class="text-lg font-semibold">
-                任务详情
+                {{ t('ui.taskDetails') }}
               </h3>
               <div class="flex items-center gap-1 text-sm font-mono text-muted-foreground bg-muted px-2 py-0.5 rounded">
                 <Video
@@ -472,7 +470,7 @@
                 size="icon"
                 class="h-8 w-8"
                 :class="{ 'text-primary': detailAutoRefresh }"
-                :title="detailAutoRefresh ? '停止自动刷新' : '开启自动刷新（每5秒）'"
+                :title="detailAutoRefresh ? t('ui.stopAutomaticRefresh') : t('ui.enableAutomaticRefreshEvery5Seconds')"
                 @click="toggleDetailAutoRefresh"
               >
                 <RefreshCw
@@ -484,7 +482,7 @@
                 variant="ghost"
                 size="icon"
                 class="h-8 w-8"
-                title="关闭"
+                :title="t('ui.close')"
                 @click="closeDetail"
               >
                 <X class="w-4 h-4" />
@@ -501,7 +499,7 @@
             <span>{{ formatDateTimeFull(selectedTask.created_at) }}</span>
             <template v-if="isAdmin">
               <span class="opacity-40">|</span>
-              <span>用户: {{ selectedTask.username }}</span>
+              <span>{{ t('ui.users') }} {{ selectedTask.username }}</span>
             </template>
             <span class="opacity-40">|</span>
             <span>{{ displayTaskSource(selectedTask) }}</span>
@@ -543,7 +541,7 @@
                   v-if="selectedTask.error_code"
                   class="text-xs font-medium text-red-600 dark:text-red-400 mb-1"
                 >
-                  错误码: {{ selectedTask.error_code }}
+                  {{ t('ui.errorCode') }} {{ selectedTask.error_code }}
                 </p>
                 <p class="text-sm text-red-600 dark:text-red-400">
                   {{ selectedTask.error_message }}
@@ -589,14 +587,12 @@
                   v-if="selectedTask.video_size_bytes || selectedTask.video_expires_at"
                   class="flex items-center gap-3 text-xs text-muted-foreground"
                 >
-                  <span v-if="selectedTask.video_size_bytes">
-                    大小: {{ formatFileSize(selectedTask.video_size_bytes) }}
+                  <span v-if="selectedTask.video_size_bytes"> {{ t('ui.size') }} {{ formatFileSize(selectedTask.video_size_bytes) }}
                   </span>
                   <span
                     v-if="selectedTask.video_expires_at"
                     class="text-amber-600 dark:text-amber-400"
-                  >
-                    过期: {{ formatDateTimeCompact(selectedTask.video_expires_at) }}
+                  > {{ t('ui.expires') }} {{ formatDateTimeCompact(selectedTask.video_expires_at) }}
                   </span>
                 </div>
               </div>
@@ -612,7 +608,7 @@
                 :key="index"
               >
                 <p class="text-xs text-muted-foreground font-medium mb-1.5">
-                  视频 {{ index + 1 }}
+                  {{ t('ui.video') }} {{ index + 1 }}
                 </p>
                 <div class="rounded-lg overflow-hidden border border-border/60 bg-black">
                   <video
@@ -647,7 +643,7 @@
           >
             <Video class="w-8 h-8 mx-auto mb-2 text-amber-500" />
             <p class="text-sm text-amber-600 dark:text-amber-400">
-              视频链接不可用或已过期
+              {{ t('ui.theVideoLinkIsUnavailableOrHasExpired') }}
             </p>
           </div>
 
@@ -663,8 +659,7 @@
                 class="h-6 px-2 text-xs"
                 @click="copyToClipboard(displayTaskDescription(selectedTask))"
               >
-                <Copy class="w-3 h-3 mr-1" />
-                复制
+                <Copy class="w-3 h-3 mr-1" /> {{ t('common.copy') }}
               </Button>
             </div>
             <div class="p-3 bg-muted/50 rounded-lg border border-border/60 text-sm whitespace-pre-wrap break-words max-h-32 overflow-y-auto leading-relaxed">
@@ -678,7 +673,7 @@
             class="space-y-2"
           >
             <h4 class="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-              视频信息
+              {{ t('ui.videoInformation') }}
             </h4>
             <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
               <div
@@ -686,7 +681,7 @@
                 class="p-3 bg-muted/30 rounded-lg"
               >
                 <p class="text-xs text-muted-foreground mb-0.5">
-                  视频时长
+                  {{ t('ui.videoDuration') }}
                 </p>
                 <p class="text-sm font-medium">
                   {{ selectedTask.video_duration_seconds.toFixed(1) }}s
@@ -697,7 +692,7 @@
                 class="p-3 bg-muted/30 rounded-lg"
               >
                 <p class="text-xs text-muted-foreground mb-0.5">
-                  分辨率
+                  {{ t('ui.resolution') }}
                 </p>
                 <p class="text-sm font-medium">
                   {{ selectedTask.resolution }}
@@ -708,7 +703,7 @@
                 class="p-3 bg-muted/30 rounded-lg"
               >
                 <p class="text-xs text-muted-foreground mb-0.5">
-                  宽高比
+                  {{ t('ui.aspectRatio') }}
                 </p>
                 <p class="text-sm font-medium">
                   {{ selectedTask.aspect_ratio }}
@@ -719,7 +714,7 @@
                 class="p-3 bg-muted/30 rounded-lg"
               >
                 <p class="text-xs text-muted-foreground mb-0.5">
-                  尺寸
+                  {{ t('ui.dimensions') }}
                 </p>
                 <p class="text-sm font-medium">
                   {{ selectedTask.size }}
@@ -731,12 +726,12 @@
           <!-- 执行状态（网格布局） -->
           <div class="space-y-2">
             <h4 class="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-              执行状态
+              {{ t('ui.executionStatus') }}
             </h4>
             <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
               <div class="p-3 bg-muted/30 rounded-lg">
                 <p class="text-xs text-muted-foreground mb-0.5">
-                  轮询
+                  {{ t('ui.polling') }}
                 </p>
                 <p class="text-sm font-medium">
                   {{ selectedTask.poll_count ?? selectedTask.attempt ?? 0 }} / {{ selectedTask.max_poll_count ?? selectedTask.max_attempts ?? 1 }}
@@ -744,7 +739,7 @@
               </div>
               <div class="p-3 bg-muted/30 rounded-lg">
                 <p class="text-xs text-muted-foreground mb-0.5">
-                  重试
+                  {{ t('vscodex.connection.retry') }}
                 </p>
                 <p class="text-sm font-medium">
                   {{ selectedTask.retry_count ?? 0 }} / {{ selectedTask.max_retries ?? selectedTask.max_attempts ?? 1 }}
@@ -752,7 +747,7 @@
               </div>
               <div class="p-3 bg-muted/30 rounded-lg">
                 <p class="text-xs text-muted-foreground mb-0.5">
-                  轮询间隔
+                  {{ t('ui.pollingInterval') }}
                 </p>
                 <p class="text-sm font-medium">
                   {{ selectedTask.poll_interval_seconds ? `${selectedTask.poll_interval_seconds}s` : selectedTask.trigger ?? '-' }}
@@ -763,7 +758,7 @@
                 class="p-3 bg-muted/30 rounded-lg"
               >
                 <p class="text-xs text-muted-foreground mb-0.5">
-                  下次轮询
+                  {{ t('ui.nextPoll') }}
                 </p>
                 <p class="text-sm font-medium">
                   {{ formatDateTimeCompact(selectedTask.next_poll_at) }}
@@ -775,7 +770,7 @@
           <!-- 时间范围 -->
           <div class="space-y-2">
             <h4 class="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-              时间范围
+              {{ t('ui.timeRange') }}
             </h4>
             <div class="flex items-center gap-1 text-sm font-medium">
               <span>{{ formatTimeWithMs(selectedTask.created_at) }}</span>
@@ -792,7 +787,7 @@
               <span
                 v-else
                 class="text-muted-foreground"
-              >处理中...</span>
+              >{{ t('ui.processingc1fd812') }}</span>
             </div>
           </div>
 
@@ -803,8 +798,7 @@
           >
             <div class="flex items-center justify-between">
               <h4 class="text-xs font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-2">
-                <FileJson class="w-3.5 h-3.5" />
-                响应数据
+                <FileJson class="w-3.5 h-3.5" /> {{ t('ui.responseData') }}
               </h4>
               <Button
                 variant="ghost"
@@ -812,8 +806,7 @@
                 class="h-5 px-1.5 text-xs"
                 @click="copyToClipboard(JSON.stringify(selectedTask.request_metadata.poll_raw_response, null, 2))"
               >
-                <Copy class="w-3 h-3 mr-1" />
-                复制
+                <Copy class="w-3 h-3 mr-1" /> {{ t('common.copy') }}
               </Button>
             </div>
             <div class="p-3 bg-muted/50 rounded-lg border border-border/40 overflow-x-auto max-h-48 overflow-y-auto">
@@ -831,8 +824,7 @@
               class="w-full"
               @click="cancelTask(selectedTask)"
             >
-              <XCircle class="w-4 h-4 mr-2" />
-              取消任务
+              <XCircle class="w-4 h-4 mr-2" /> {{ t('ui.cancelTask') }}
             </Button>
           </div>
         </div>
@@ -898,7 +890,7 @@ import { formatDateTimeCompact, formatDateTimeFull } from '@/utils/format'
 const authStore = useAuthStore()
 const isAdmin = computed(() => authStore.canAccessAdmin)
 const { toast } = useToast()
-const { legacyT } = useI18n()
+const { t } = useI18n()
 const { copyToClipboard } = useClipboard()
 
 // 状态
@@ -979,7 +971,7 @@ async function fetchTasks() {
     total.value = response.total
   } catch (error: unknown) {
     toast({
-      title: '获取任务列表失败',
+      get title() { return t('ui.failedToLoadTaskList') },
       description: error instanceof Error ? error.message : String(error),
       variant: 'destructive',
     })
@@ -1016,7 +1008,7 @@ async function openTaskDetail(task: AsyncTaskItem) {
     await loadAuthenticatedVideo(detail)
   } catch (error: unknown) {
     toast({
-      title: '获取任务详情失败',
+      get title() { return t('ui.failedToLoadTaskDetails') },
       description: error instanceof Error ? error.message : String(error),
       variant: 'destructive',
     })
@@ -1032,7 +1024,7 @@ async function refreshTaskDetail() {
     await loadAuthenticatedVideo(detail)
   } catch (error: unknown) {
     toast({
-      title: '刷新失败',
+      get title() { return t('ui.refreshFailed') },
       description: error instanceof Error ? error.message : String(error),
       variant: 'destructive',
     })
@@ -1094,14 +1086,14 @@ async function openUsageRecord(task: AsyncTaskItem) {
       usageDetailOpen.value = true
     } else {
       toast({
-        title: '无法打开使用记录',
-        description: '该任务没有关联的请求ID',
+        get title() { return t('ui.unableToOpenUsageRecord') },
+        get description() { return t('ui.thisTaskHasNoLinkedRequestId') },
         variant: 'destructive',
       })
     }
   } catch (error: unknown) {
     toast({
-      title: '获取任务信息失败',
+      get title() { return t('ui.failedToLoadTaskInformation') },
       description: error instanceof Error ? error.message : String(error),
       variant: 'destructive',
     })
@@ -1110,11 +1102,11 @@ async function openUsageRecord(task: AsyncTaskItem) {
 
 // 取消任务
 async function cancelTask(task: AsyncTaskItem | AsyncTaskDetail) {
-  if (!confirm(legacyT('确定要取消这个任务吗？'))) return
+  if (!confirm(t('ui.cancelThisTask'))) return
   try {
     await asyncTasksApi.cancel(task.id)
     toast({
-      title: '任务已取消',
+      get title() { return t('ui.taskCanceled') },
     })
     await refreshOverview()
     if (showDetail.value) {
@@ -1122,7 +1114,7 @@ async function cancelTask(task: AsyncTaskItem | AsyncTaskDetail) {
     }
   } catch (error: unknown) {
     toast({
-      title: '取消任务失败',
+      get title() { return t('ui.failedToCancelTask') },
       description: error instanceof Error ? error.message : String(error),
       variant: 'destructive',
     })
@@ -1146,17 +1138,17 @@ function getStatusVariant(status: string): 'default' | 'secondary' | 'destructiv
 
 function getStatusLabel(status: string): string {
   const labels: Record<string, string> = {
-    pending: '待处理',
+    get pending() { return t('ui.actionNeeded') },
     submitted: '已提交',
-    queued: '排队中',
-    running: '运行中',
-    retrying: '重试中',
-    processing: '处理中',
-    succeeded: '成功',
-    completed: '已完成',
-    failed: '失败',
-    cancelled: '已取消',
-    skipped: '已跳过',
+    get queued() { return t('ui.queuedd6f766f') },
+    get running() { return t('ui.running1f0eb99') },
+    get retrying() { return t('ui.retrying') },
+    get processing() { return t('ui.processing694b71b') },
+    get succeeded() { return t('ui.success') },
+    get completed() { return t('site.home.status.completed') },
+    get failed() { return t('ui.failed28384d7') },
+    get cancelled() { return t('ui.canceled') },
+    get skipped() { return t('ui.skipped71e95b2') },
   }
   return labels[status] || status
 }
@@ -1251,7 +1243,6 @@ function calcDuration(startStr: string, endStr: string): string {
   const secs = Math.floor(diffS % 60)
   return `${mins}m${secs}s`
 }
-
 
 // 格式化 JSON
 function formatJson(obj: unknown): string {

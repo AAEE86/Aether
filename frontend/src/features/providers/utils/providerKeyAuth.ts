@@ -1,3 +1,5 @@
+
+import { translate as t } from '@/i18n'
 export interface ProviderKeyAuthCarrier {
   provider_type?: string | null
   auth_type?: string | null
@@ -114,8 +116,8 @@ export function canEditOAuthCredential(input: ProviderKeyAuthCarrier): boolean {
 export function getProviderAuthLabel(input: ProviderKeyAuthCarrier): string {
   if (input.agent_identity === true) return 'Agent Identity'
   if (isOAuthManagedCredential(input)) return 'OAuth'
-  if (isServiceAccountCredential(input)) return '服务账号'
-  if (getProviderRuntimeAuthKind(input) === 'mixed') return '混合'
+  if (isServiceAccountCredential(input)) return t('providers.migration.serviceAccount65596a')
+  if (getProviderRuntimeAuthKind(input) === 'mixed') return t('providers.migration.mixeda4a06e')
   return getProviderRuntimeAuthKind(input) === 'bearer' ? 'Bearer' : 'API Key'
 }
 

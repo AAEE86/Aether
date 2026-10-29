@@ -1,7 +1,7 @@
 <template>
   <CardSection
-    title="请求记录清理策略"
-    description="配置请求记录的分级保留和自动清理"
+    :title="t('ui.requestLogCleanupPolicy')"
+    :description="t('ui.configureTieredRetentionAndAutomaticCleanupForRequestRecords')"
   >
     <template #actions>
       <div class="flex items-center gap-4">
@@ -15,11 +15,9 @@
             <Label
               for="enable-auto-cleanup"
               class="text-sm cursor-pointer"
-            >
-              启用自动清理
-            </Label>
+            > {{ t('ui.enableAutomaticCleanup') }} </Label>
             <p class="text-xs text-muted-foreground">
-              每天凌晨执行
+              {{ t('ui.runsEveryDayBeforeDawn') }}
             </p>
           </div>
         </div>
@@ -30,14 +28,14 @@
           @click="openManualCleanupDialog"
         >
           <Trash2 class="w-3.5 h-3.5 mr-1.5" />
-          {{ manualCleanupRunning ? '清理中…' : '立即清理' }}
+          {{ manualCleanupRunning ? t('ui.cleaning') : t('ui.cleanNow') }}
         </Button>
         <Button
           size="sm"
           :disabled="loading || !hasChanges"
           @click="$emit('save')"
         >
-          {{ loading ? '保存中...' : '保存' }}
+          {{ loading ? t('ui.saving') : t('ui.save') }}
         </Button>
       </div>
     </template>
@@ -46,9 +44,7 @@
         <Label
           for="detail-log-retention-days"
           class="block text-sm font-medium"
-        >
-          详细记录保留天数
-        </Label>
+        > {{ t('ui.detailedRecordRetentionDays') }} </Label>
         <Input
           id="detail-log-retention-days"
           :model-value="detailLogRetentionDays"
@@ -58,7 +54,7 @@
           @update:model-value="$emit('update:detailLogRetentionDays', Number($event))"
         />
         <p class="mt-1 text-xs text-muted-foreground">
-          超过后压缩 body 字段
+          {{ t('ui.compressBodyFieldsAfterThisPeriod') }}
         </p>
       </div>
 
@@ -66,9 +62,7 @@
         <Label
           for="compressed-log-retention-days"
           class="block text-sm font-medium"
-        >
-          压缩记录保留天数
-        </Label>
+        > {{ t('ui.compressedRecordRetentionDays') }} </Label>
         <Input
           id="compressed-log-retention-days"
           :model-value="compressedLogRetentionDays"
@@ -78,7 +72,7 @@
           @update:model-value="$emit('update:compressedLogRetentionDays', Number($event))"
         />
         <p class="mt-1 text-xs text-muted-foreground">
-          超过后删除 body 字段
+          {{ t('ui.deleteBodyFieldsAfterThisPeriod') }}
         </p>
       </div>
 
@@ -86,9 +80,7 @@
         <Label
           for="header-retention-days"
           class="block text-sm font-medium"
-        >
-          请求头保留天数
-        </Label>
+        > {{ t('ui.requestHeaderRetentionDays') }} </Label>
         <Input
           id="header-retention-days"
           :model-value="headerRetentionDays"
@@ -98,7 +90,7 @@
           @update:model-value="$emit('update:headerRetentionDays', Number($event))"
         />
         <p class="mt-1 text-xs text-muted-foreground">
-          超过后清空 headers 字段
+          {{ t('ui.clearHeadersFieldsAfterThisPeriod') }}
         </p>
       </div>
 
@@ -106,9 +98,7 @@
         <Label
           for="log-retention-days"
           class="block text-sm font-medium"
-        >
-          请求记录保存天数
-        </Label>
+        > {{ t('ui.requestRecordRetentionDays') }} </Label>
         <Input
           id="log-retention-days"
           :model-value="logRetentionDays"
@@ -118,7 +108,7 @@
           @update:model-value="$emit('update:logRetentionDays', Number($event))"
         />
         <p class="mt-1 text-xs text-muted-foreground">
-          超过后删除整条记录
+          {{ t('ui.deleteFullRecordsAfterThisPeriod') }}
         </p>
       </div>
 
@@ -126,9 +116,7 @@
         <Label
           for="cleanup-batch-size"
           class="block text-sm font-medium"
-        >
-          每批次清理记录数
-        </Label>
+        > {{ t('ui.cleanupBatchSize') }} </Label>
         <Input
           id="cleanup-batch-size"
           :model-value="cleanupBatchSize"
@@ -138,7 +126,7 @@
           @update:model-value="$emit('update:cleanupBatchSize', Number($event))"
         />
         <p class="mt-1 text-xs text-muted-foreground">
-          避免单次操作过大影响性能
+          {{ t('ui.avoidOversizedSingleOperationsThatAffectPerformance') }}
         </p>
       </div>
 
@@ -146,9 +134,7 @@
         <Label
           for="audit-log-retention-days"
           class="block text-sm font-medium"
-        >
-          审计日志保留天数
-        </Label>
+        > {{ t('ui.auditLogRetentionDays') }} </Label>
         <Input
           id="audit-log-retention-days"
           :model-value="auditLogRetentionDays"
@@ -158,7 +144,7 @@
           @update:model-value="$emit('update:auditLogRetentionDays', Number($event))"
         />
         <p class="mt-1 text-xs text-muted-foreground">
-          超过后删除审计日志记录
+          {{ t('ui.deleteAuditLogRecordsAfterThisPeriod') }}
         </p>
       </div>
 
@@ -166,9 +152,7 @@
         <Label
           for="request-candidates-retention-days"
           class="block text-sm font-medium"
-        >
-          候选记录保留天数
-        </Label>
+        > {{ t('ui.candidateRecordRetentionDays') }} </Label>
         <Input
           id="request-candidates-retention-days"
           :model-value="requestCandidatesRetentionDays"
@@ -178,7 +162,7 @@
           @update:model-value="$emit('update:requestCandidatesRetentionDays', Number($event))"
         />
         <p class="mt-1 text-xs text-muted-foreground">
-          过期后按时间窗口批量清理 request_candidates 审计记录
+          {{ t('ui.afterExpirationCleanRequestCandidatesAuditRecordsInTimeWindow') }}
         </p>
       </div>
 
@@ -186,9 +170,7 @@
         <Label
           for="request-candidates-cleanup-batch-size"
           class="block text-sm font-medium"
-        >
-          候选记录清理批次
-        </Label>
+        > {{ t('ui.candidateCleanupBatch') }} </Label>
         <Input
           id="request-candidates-cleanup-batch-size"
           :model-value="requestCandidatesCleanupBatchSize"
@@ -198,7 +180,7 @@
           @update:model-value="$emit('update:requestCandidatesCleanupBatchSize', Number($event))"
         />
         <p class="mt-1 text-xs text-muted-foreground">
-          独立控制候选记录大表清理节奏，不再跟随 Key 删除联动
+          {{ t('ui.controlCleanupPacingForTheCandidateRecordTableIndependentlyNo') }}
         </p>
       </div>
 
@@ -206,9 +188,7 @@
         <Label
           for="proxy-node-metrics-1m-retention-days"
           class="block text-sm font-medium"
-        >
-          代理 1m 指标保留天数
-        </Label>
+        > {{ t('ui.proxy1mMetricRetentionDays') }} </Label>
         <Input
           id="proxy-node-metrics-1m-retention-days"
           :model-value="proxyNodeMetrics1mRetentionDays"
@@ -220,7 +200,7 @@
           @update:model-value="$emit('update:proxyNodeMetrics1mRetentionDays', Number($event))"
         />
         <p class="mt-1 text-xs text-muted-foreground">
-          用于代理节点稳定性分钟级图表，后端最少保留 1 天
+          {{ t('ui.usedForMinuteLevelProxyNodeStabilityChartsBackendKeeps') }}
         </p>
       </div>
 
@@ -228,9 +208,7 @@
         <Label
           for="proxy-node-metrics-1h-retention-days"
           class="block text-sm font-medium"
-        >
-          代理 1h 指标保留天数
-        </Label>
+        > {{ t('ui.proxy1hMetricRetentionDays') }} </Label>
         <Input
           id="proxy-node-metrics-1h-retention-days"
           :model-value="proxyNodeMetrics1hRetentionDays"
@@ -242,7 +220,7 @@
           @update:model-value="$emit('update:proxyNodeMetrics1hRetentionDays', Number($event))"
         />
         <p class="mt-1 text-xs text-muted-foreground">
-          小时级聚合用于长期趋势，不能短于 1m 指标保留天数
+          {{ t('ui.hourlyAggregatesAreUsedForLongTermTrendsAndCannot') }}
         </p>
       </div>
 
@@ -250,9 +228,7 @@
         <Label
           for="proxy-node-metrics-cleanup-batch-size"
           class="block text-sm font-medium"
-        >
-          代理指标清理批次
-        </Label>
+        > {{ t('ui.proxyMetricCleanupBatch') }} </Label>
         <Input
           id="proxy-node-metrics-cleanup-batch-size"
           :model-value="proxyNodeMetricsCleanupBatchSize"
@@ -264,7 +240,7 @@
           @update:model-value="$emit('update:proxyNodeMetricsCleanupBatchSize', Number($event))"
         />
         <p class="mt-1 text-xs text-muted-foreground">
-          独立限制 proxy_node_metrics 表的单批删除数量
+          {{ t('ui.separatelyLimitsPerBatchDeletesForTheProxyNodeMetrics') }}
         </p>
       </div>
     </div>
@@ -272,16 +248,16 @@
     <!-- 清理策略说明 -->
     <div class="mt-4 p-4 bg-muted/50 rounded-lg">
       <h4 class="text-sm font-medium mb-2">
-        清理策略说明
+        {{ t('ui.cleanupPolicyNotes') }}
       </h4>
       <div class="text-xs text-muted-foreground space-y-1">
-        <p>1. <strong>详细日志阶段</strong>: 保留完整的 request_body 和 response_body</p>
-        <p>2. <strong>压缩日志阶段</strong>: body 字段被压缩存储，节省空间</p>
-        <p>3. <strong>统计阶段</strong>: 仅保留 tokens、成本等统计信息</p>
-        <p>4. <strong>归档删除</strong>: 超过保留期限后完全删除记录</p>
-        <p>5. <strong>候选记录</strong>: 独立按保留天数清理 request_candidates 审计记录，不再跟随 Key 删除联动</p>
-        <p>6. <strong>审计日志</strong>: 独立清理，记录用户登录、操作等安全事件</p>
-        <p>7. <strong>代理指标</strong>: 仅保留 1m/1h 聚合桶，清理任务按批次删除过期桶</p>
+        <p>1. <strong>{{ t('ui.detailedLogStage') }}</strong>{{ t('ui.retainCompleteRequestBodyAndResponseBodyData') }}</p>
+        <p>2. <strong>{{ t('ui.compressedLogStage') }}</strong>{{ t('ui.compressBodyFieldsToSaveStorageSpace') }}</p>
+        <p>3. <strong>{{ t('ui.statisticsStage') }}</strong>{{ t('ui.keepOnlyStatisticsSuchAsTokensAndCost') }}</p>
+        <p>4. <strong>{{ t('ui.archiveDeletion') }}</strong>{{ t('ui.deleteRecordsEntirelyAfterTheRetentionPeriod') }}</p>
+        <p>5. <strong>{{ t('ui.candidateRecords') }}</strong>{{ t('ui.cleanUpRequestCandidatesAuditRecordsByRetentionPeriodIndependently') }}</p>
+        <p>6. <strong>{{ t('ui.auditLogs') }}</strong>{{ t('ui.cleanUpSecurityEventsSuchAsSignInsAndUser') }}</p>
+        <p>7. <strong>{{ t('ui.proxyMetrics') }}</strong>{{ t('ui.keep1MinuteAnd1HourAggregatesCleanupDeletesExpired') }}</p>
       </div>
     </div>
 
@@ -311,10 +287,10 @@
       <div class="flex flex-wrap items-start justify-between gap-3 px-4 py-3 border-b border-border">
         <div class="min-w-0 flex-1 basis-48">
           <h4 class="text-sm font-medium">
-            最近清理记录
+            {{ t('ui.recentCleanupRuns') }}
           </h4>
           <p class="text-xs text-muted-foreground">
-            自动清理、手动系统清理和请求体后台任务的执行结果
+            {{ t('ui.resultsFromAutomaticCleanupManualSystemCleanupAndRequestBody') }}
           </p>
         </div>
         <Button
@@ -327,15 +303,14 @@
           <RefreshCw
             class="w-3.5 h-3.5 mr-1.5"
             :class="{ 'animate-spin': cleanupRunsLoading }"
-          />
-          刷新
+          /> {{ t('ui.refresh') }}
         </Button>
       </div>
       <div
         v-if="cleanupRuns.length === 0 && !cleanupRunsLoading"
         class="px-4 py-6 text-sm text-muted-foreground"
       >
-        暂无清理记录
+        {{ t('ui.noCleanupHistory') }}
       </div>
       <div
         v-else
@@ -345,22 +320,22 @@
           <thead class="bg-muted/30 text-xs text-muted-foreground">
             <tr>
               <th class="px-4 py-2 text-left font-medium">
-                时间
+                {{ t('ui.time') }}
               </th>
               <th class="px-4 py-2 text-left font-medium">
-                类型
+                {{ t('ui.typeba40014') }}
               </th>
               <th class="px-4 py-2 text-left font-medium">
-                来源
+                {{ t('ui.source') }}
               </th>
               <th class="px-4 py-2 text-left font-medium">
-                状态
+                {{ t('ui.status6320b4a') }}
               </th>
               <th class="px-4 py-2 text-left font-medium">
-                结果
+                {{ t('ui.result') }}
               </th>
               <th class="px-4 py-2 text-right font-medium">
-                耗时
+                {{ t('ui.duration') }}
               </th>
             </tr>
           </thead>
@@ -377,7 +352,7 @@
                 {{ cleanupKindLabel(run.kind) }}
               </td>
               <td class="px-4 py-2 whitespace-nowrap text-muted-foreground">
-                {{ run.trigger === 'manual' ? '手动' : '自动' }}
+                {{ run.trigger === 'manual' ? t('ui.manual') : t('ui.automatic') }}
               </td>
               <td class="px-4 py-2 whitespace-nowrap">
                 <span :class="cleanupStatusClass(run.status)">
@@ -402,17 +377,7 @@
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
-import { RefreshCw, Trash2 } from 'lucide-vue-next'
-import { adminApi, type CleanupRunRecord } from '@/api/admin'
-import Button from '@/components/ui/button.vue'
-import Input from '@/components/ui/input.vue'
-import Label from '@/components/ui/label.vue'
-import Switch from '@/components/ui/switch.vue'
-import { CardSection } from '@/components/layout'
-import ManualCleanupConfirmDialog from './ManualCleanupConfirmDialog.vue'
-import { useToast } from '@/composables/useToast'
-
+import { useI18n } from '@/i18n'
 defineProps<{
   enableAutoCleanup: boolean
   detailLogRetentionDays: number
@@ -445,6 +410,19 @@ defineEmits<{
   'update:proxyNodeMetrics1hRetentionDays': [value: number]
   'update:proxyNodeMetricsCleanupBatchSize': [value: number]
 }>()
+
+const { t } = useI18n()
+
+import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { RefreshCw, Trash2 } from 'lucide-vue-next'
+import { adminApi, type CleanupRunRecord } from '@/api/admin'
+import Button from '@/components/ui/button.vue'
+import Input from '@/components/ui/input.vue'
+import Label from '@/components/ui/label.vue'
+import Switch from '@/components/ui/switch.vue'
+import { CardSection } from '@/components/layout'
+import ManualCleanupConfirmDialog from './ManualCleanupConfirmDialog.vue'
+import { useToast } from '@/composables/useToast'
 
 const cleanupRuns = ref<CleanupRunRecord[]>([])
 const cleanupRunsLoading = ref(false)
@@ -486,24 +464,24 @@ async function loadCleanupRuns() {
 
 function cleanupKindLabel(kind: string): string {
   const labels: Record<string, string> = {
-    usage_cleanup: '请求记录',
-    audit_cleanup: '审计日志',
-    request_candidate_cleanup: '候选记录',
-    request_bodies: '请求体',
-    config_purge: '配置清空',
-    users_purge: '用户清空',
-    usage_purge: '使用记录清空',
-    audit_logs_purge: '审计日志清空',
-    stats_purge: '统计聚合清空',
-    system_cleanup: '系统清理',
+    get usage_cleanup() { return t('ui.requestRecords') },
+    get audit_cleanup() { return t('ui.auditLogs') },
+    get request_candidate_cleanup() { return t('ui.candidateRecords') },
+    get request_bodies() { return t('ui.requestBody') },
+    get config_purge() { return t('ui.configurationCleared') },
+    get users_purge() { return t('ui.usersCleared') },
+    get usage_purge() { return t('ui.usageRecordsCleared') },
+    get audit_logs_purge() { return t('ui.auditLogsCleared') },
+    get stats_purge() { return t('ui.aggregatedStatisticsCleared') },
+    get system_cleanup() { return t('ui.systemCleanup') },
   }
   return labels[kind] || kind
 }
 
 function cleanupStatusLabel(status: string): string {
-  if (status === 'processing') return '执行中'
-  if (status === 'failed') return '失败'
-  return '完成'
+  if (status === 'processing') return t('ui.running5026a63')
+  if (status === 'failed') return t('ui.failed28384d7')
+  return t('ui.completed')
 }
 
 function cleanupStatusClass(status: string): string {
@@ -525,24 +503,24 @@ function formatDuration(value: number | null): string {
 
 function cleanupSummaryText(summary: Record<string, unknown>): string {
   const total = typeof summary.total === 'number' ? summary.total : null
-  if (total !== null) return `影响 ${total} 行`
+  if (total !== null) return t('settings.cleanup.affectedRows', { count: total })
 
   const entries = Object.entries(summary)
     .filter(([, value]) => typeof value === 'number' && value > 0)
     .map(([key, value]) => `${summaryLabel(key)} ${value}`)
-  return entries.length > 0 ? entries.join(' / ') : '无数据变更'
+  return entries.length > 0 ? entries.join(' / ') : t('settings.cleanup.noChanges')
 }
 
 function summaryLabel(key: string): string {
   const labels: Record<string, string> = {
-    body_externalized: '详细体',
-    legacy_body_refs_migrated: '迁移',
-    body_cleaned: '清体',
-    header_cleaned: '清头',
+    get body_externalized() { return t('ui.detailedBody') },
+    get legacy_body_refs_migrated() { return t('ui.migration') },
+    get body_cleaned() { return t('ui.bodyCleanup') },
+    get header_cleaned() { return t('ui.headerCleanup') },
     keys_cleaned: 'Key',
-    records_deleted: '删记录',
-    audit_logs_deleted: '删日志',
-    request_candidates_deleted: '删候选',
+    get records_deleted() { return t('ui.deleteRecords') },
+    get audit_logs_deleted() { return t('ui.deleteLogs') },
+    get request_candidates_deleted() { return t('ui.deleteCandidates') },
   }
   return labels[key] || key
 }
@@ -560,4 +538,5 @@ onBeforeUnmount(() => {
     cleanupRunsTimer = null
   }
 })
+
 </script>

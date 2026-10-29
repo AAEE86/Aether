@@ -69,7 +69,7 @@
       class="shrink-0 p-1 rounded transition-colors opacity-40 hover:opacity-100"
       :class="closeClasses"
       type="button"
-      aria-label="关闭"
+      :aria-label="t('ui.close')"
       @click="$emit('remove')"
     >
       <X class="w-3.5 h-3.5" />
@@ -78,6 +78,8 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { CheckCircle2, XCircle, AlertTriangle, Info, X } from 'lucide-vue-next'
 
@@ -193,6 +195,8 @@ const messageClasses = computed(() => {
 const closeClasses = computed(() => {
   return 'text-[var(--slate-medium)] hover:bg-[var(--color-border-soft)] dark:text-[var(--cloud-medium)]'
 })
+
+const { t } = useI18n()
 </script>
 
 <style scoped>

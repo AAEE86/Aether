@@ -1,9 +1,17 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ref } from 'vue'
+import type { AxiosProgressEvent } from 'axios'
+import { setI18nLocale } from '@/i18n'
 
 const { errorMock, successMock } = vi.hoisted(() => ({
   errorMock: vi.fn(),
   successMock: vi.fn(),
+}))
+
+const importMocks = vi.hoisted(() => ({
+  importConfig: vi.fn(),
+  importUsers: vi.fn(),
+  importAggregateData: vi.fn(),
 }))
 
 vi.mock('@/composables/useToast', () => ({
@@ -14,7 +22,7 @@ vi.mock('@/composables/useToast', () => ({
 }))
 
 vi.mock('@/api/admin', () => ({
-  adminApi: {},
+  adminApi: importMocks,
 }))
 
 import { useConfigExportImport } from '../composables/useConfigExportImport'
@@ -38,6 +46,56 @@ describe('useConfigExportImport file selection', () => {
   beforeEach(() => {
     errorMock.mockReset()
     successMock.mockReset()
+    Object.values(importMocks).forEach(mock => mock.mockReset())
+    setI18nLocale('zh-CN')
+  })
+
+  afterEach(() => setI18nLocale('zh-CN'))
+
+  it.each([
+    {
+      select: 'handleConfigFileSelect', confirm: 'confirmImport', dialog: 'importDialogOpen',
+      progress: 'importProgress', api: 'importConfig', data: { version: '1', global_models: [] },
+      labelZh: '配置数据', labelEn: 'Configuration data',
+    },
+    {
+      select: 'handleUsersFileSelect', confirm: 'confirmImportUsers', dialog: 'importUsersDialogOpen',
+      progress: 'importUsersProgress', api: 'importUsers', data: { version: '1', users: [] },
+      labelZh: '用户数据', labelEn: 'user data',
+    },
+    {
+      select: 'handleAggregateFileSelect', confirm: 'confirmImportAggregate', dialog: 'aggregateImportDialogOpen',
+      progress: 'importAggregateProgress', api: 'importAggregateData',
+      data: { version: '1', config_data: { global_models: [] }, user_data: { users: [] } },
+      labelZh: '完整备份', labelEn: 'Full backup',
+    },
+  ] as const)('translates $api progress in the current locale', async (testCase) => {
+    let onUploadProgress: ((event: AxiosProgressEvent) => void) | undefined
+    let completeImport!: (result: object) => void
+    const response = new Promise<object>(resolve => { completeImport = resolve })
+    importMocks[testCase.api].mockImplementation((_data, options) => {
+      onUploadProgress = options.onUploadProgress
+      return response
+    })
+    const state = useConfigExportImport(ref({ site_name: 'Aether' }))
+    state[testCase.select](buildFileInputEvent(new File([JSON.stringify(testCase.data)], 'import.json')))
+    await vi.waitFor(() => expect(state[testCase.dialog].value).toBe(true))
+
+    const pendingImport = state[testCase.confirm]()
+    expect(state[testCase.progress].value?.message).toBe(`准备提交${testCase.labelZh}`)
+    await vi.waitFor(() => expect(onUploadProgress).toBeTypeOf('function'))
+    onUploadProgress!({ loaded: 1024 } as AxiosProgressEvent)
+    expect(state[testCase.progress].value?.message).toBe(`${testCase.labelZh}上传中：1 KB`)
+
+    setI18nLocale('en-US')
+    onUploadProgress!({ loaded: 2048, total: 4096 } as AxiosProgressEvent)
+    expect(state[testCase.progress].value?.message).toBe(`${testCase.labelEn} uploading: 2 KB / 4 KB`)
+    onUploadProgress!({ loaded: 4096, total: 4096 } as AxiosProgressEvent)
+    expect(state[testCase.progress].value?.message).toBe(`${testCase.labelEn} uploaded. The server is validating and writing data.`)
+
+    completeImport({})
+    await pendingImport
+    expect(errorMock).not.toHaveBeenCalled()
   })
 
   it('accepts config import files larger than the old 10MB limit', async () => {

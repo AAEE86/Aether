@@ -43,6 +43,7 @@ vi.mock('@/stores/modules', () => ({
 }))
 
 import { useSystemConfig } from '../composables/useSystemConfig'
+import { getI18nLocale, setI18nLocale } from '@/i18n'
 
 describe('useSystemConfig', () => {
   beforeEach(() => {
@@ -208,5 +209,23 @@ describe('useSystemConfig', () => {
       '请求记录单个 Body 大小上限（KB），0 表示不限制'
     )
     expect(state.hasLogConfigChanges.value).toBe(false)
+  })
+  it('keeps persisted configuration metadata and user values independent of the UI language', async () => {
+    const previous = getI18nLocale()
+    try {
+      setI18nLocale('en-US')
+      getAllSystemConfigsMock.mockResolvedValue([])
+      updateSystemConfigMock.mockResolvedValue(undefined)
+      const state = useSystemConfig()
+      await state.loadSystemConfig()
+      state.systemConfig.value.site_name = '保存'
+      state.systemConfig.value.site_subtitle = '删除'
+      await state.saveSiteInfo()
+      expect(updateSystemConfigMock).toHaveBeenCalledWith('site_name', '保存', '站点名称')
+      expect(updateSystemConfigMock).toHaveBeenCalledWith('site_subtitle', '删除', '站点副标题')
+      expect(successMock).toHaveBeenCalledWith('Site information saved')
+    } finally {
+      setI18nLocale(previous)
+    }
   })
 })

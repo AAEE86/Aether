@@ -217,6 +217,7 @@ describe('providerKeyStatus', () => {
     expect(getOAuthStatusDisplay(input, 0)).toBeNull()
     expect(getOAuthStatusDisplayWithFallback(input, 0)).toEqual({
       text: '未添加',
+      kind: 'missing_refresh_token',
       isExpired: false,
       isExpiringSoon: false,
       isInvalid: false,
@@ -246,6 +247,7 @@ describe('providerKeyStatus', () => {
 
     expect(getOAuthStatusDisplayWithFallback(input, 0)).toEqual({
       text: '未添加',
+      kind: 'missing_refresh_token',
       isExpired: false,
       isExpiringSoon: false,
       isInvalid: false,
@@ -262,6 +264,7 @@ describe('providerKeyStatus', () => {
 
     expect(getOAuthStatusDisplayWithFallback(input, 0)).toEqual({
       text: '有效期未知',
+      kind: 'unknown_expiration',
       isExpired: false,
       isExpiringSoon: false,
       isInvalid: false,

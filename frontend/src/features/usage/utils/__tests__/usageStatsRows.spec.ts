@@ -1,8 +1,24 @@
 import { describe, expect, it } from 'vitest'
+import { getI18nLocale, setI18nLocale } from '@/i18n'
 
-import { apiFormatStatsRows, modelStatsRows, providerStatsRows, providerSuccessRateClass } from '../usageStatsRows'
+import { API_FORMAT_STATS_COLUMNS, MODEL_STATS_COLUMNS, PROVIDER_STATS_COLUMNS, apiFormatStatsRows, modelStatsRows, providerStatsRows, providerSuccessRateClass } from '../usageStatsRows'
 
 describe('usageStatsRows', () => {
+  it('updates existing column headers when the language changes', () => {
+    const previousLocale = getI18nLocale()
+    try {
+      setI18nLocale('zh-CN')
+      expect(MODEL_STATS_COLUMNS[0].header).toBe('效率')
+      expect(PROVIDER_STATS_COLUMNS.map(column => column.header)).toEqual(['成功率', '平均响应'])
+      setI18nLocale('en-US')
+      expect(MODEL_STATS_COLUMNS[0].header).toBe('Efficiency')
+      expect(PROVIDER_STATS_COLUMNS.map(column => column.header)).toEqual(['success rate', 'Average response'])
+      expect(API_FORMAT_STATS_COLUMNS[0].header).toBe('Average response')
+    } finally {
+      setI18nLocale(previousLocale)
+    }
+  })
+
   it('strips the claude prefix and keeps only cache reads for model rows', () => {
     const [row] = modelStatsRows([{
       model: 'claude-sonnet', request_count: 3, total_tokens: 100, effective_input_tokens: 60, output_tokens: 30,

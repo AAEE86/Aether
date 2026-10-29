@@ -1,3 +1,5 @@
+
+import { translate as t } from '@/i18n'
 import { formatApiFormat } from '@/api/endpoints/types/api-format'
 import type { TestAttemptDetail, TestCandidateSummary, TestModelFailoverResponse } from '@/api/endpoints/providers'
 import type { CandidateRecord } from '@/api/requestTrace'
@@ -127,10 +129,10 @@ export function deriveSummaryFromAttempts(result: TestModelFailoverResponse | nu
 }
 
 export const detailTabs = [
-  { name: 'request-headers', label: '请求头' },
-  { name: 'request-body', label: '请求体' },
-  { name: 'response-headers', label: '响应头' },
-  { name: 'response-body', label: '响应体' },
+  { name: 'request-headers', get label() { return t('ui.requestHeaders') } },
+  { name: 'request-body', get label() { return t('ui.requestBody') } },
+  { name: 'response-headers', get label() { return t('ui.responseHeaders') } },
+  { name: 'response-body', get label() { return t('ui.responseBody') } },
 ] as const
 
 export function statusVariant(status: string) {
@@ -140,15 +142,15 @@ export function statusVariant(status: string) {
 }
 
 export function statusLabel(status: string) {
-  if (status === 'success') return '成功'
-  if (status === 'failed') return '失败'
-  if (status === 'skipped') return '跳过'
-  if (status === 'pending') return '等待中'
-  if (status === 'streaming') return '测试中'
-  if (status === 'cancelled') return '已取消'
-  if (status === 'stream_interrupted') return '流中断'
-  if (status === 'available') return '待请求'
-  if (status === 'unused') return '未执行'
+  if (status === 'success') return t('ui.success')
+  if (status === 'failed') return t('ui.failed28384d7')
+  if (status === 'skipped') return t('ui.skip')
+  if (status === 'pending') return t('ui.waiting')
+  if (status === 'streaming') return t('ui.testing')
+  if (status === 'cancelled') return t('ui.canceled')
+  if (status === 'stream_interrupted') return t('ui.streamInterrupted')
+  if (status === 'available') return t('ui.awaitingRequest')
+  if (status === 'unused') return t('ui.notRun')
   return status
 }
 
@@ -157,7 +159,7 @@ export function statusDisplay(item: { status: string; status_code?: number | nul
   const status = item.status
   if (!code) return statusLabel(status)
   if (status === 'failed' && code >= 200 && code < 300) {
-    return `${code} 体内错误`
+    return t('providers.migration.bodyErrore8bd10', { value: String(code) })
   }
   return String(code)
 }
@@ -229,20 +231,20 @@ export function extractAttemptRequestModel(attempt: TestAttemptDetail): string |
 export function traceCandidateDetail(candidate: CandidateRecord): string {
   if (candidate.skip_reason) return formatModelTestDiagnostic(candidate.skip_reason)
   if (candidate.error_message) return formatModelTestDiagnostic(candidate.error_message)
-  if (candidate.status === 'unused') return '成功后未请求'
-  if (candidate.status === 'available') return '待请求'
-  if (candidate.endpoint_name) return `端点：${formatApiFormat(candidate.endpoint_name)}`
+  if (candidate.status === 'unused') return t('ui.notRequestedAfterSuccess')
+  if (candidate.status === 'available') return t('ui.awaitingRequest')
+  if (candidate.endpoint_name) return t('providers.migration.endpointafa852', { value: String(formatApiFormat(candidate.endpoint_name)) })
   return ''
 }
 
 export function attemptDetail(attempt: TestAttemptDetail): string {
-  if (attempt.status === 'cancelled') return '测试已取消'
-  if (attempt.status === 'unused') return '成功后未请求'
+  if (attempt.status === 'cancelled') return t('ui.testCanceled')
+  if (attempt.status === 'unused') return t('ui.notRequestedAfterSuccess')
   if (attempt.skip_reason) return formatModelTestDiagnostic(attempt.skip_reason)
   if (attempt.error_message) return formatModelTestDiagnostic(attempt.error_message)
   if (attempt.status === 'success') {
     return extractModelTestResponsePreview(attempt.response_body)
-      ?? (attempt.effective_model ? `请求模型：${attempt.effective_model}` : attempt.endpoint_base_url)
+      ?? (attempt.effective_model ? t('providers.migration.requestModel97c199', { value: String(attempt.effective_model) }) : attempt.endpoint_base_url)
   }
   return '-'
 }

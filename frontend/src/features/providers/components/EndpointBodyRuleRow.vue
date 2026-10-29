@@ -9,7 +9,7 @@
     <button
       type="button"
       class="h-7 w-6 shrink-0 inline-flex items-center justify-center rounded-sm text-muted-foreground/60 hover:text-muted-foreground hover:bg-muted cursor-grab active:cursor-grabbing"
-      title="拖拽排序"
+      :title="t('ui.dragToReorder')"
       draggable="true"
       @dragstart="(e: DragEvent) => $emit('dragstart', e)"
       @dragend="$emit('dragend')"
@@ -18,12 +18,12 @@
     </button>
     <span
       class="text-[10px] font-semibold text-muted-foreground shrink-0"
-      title="请求体"
+      :title="t('ui.requestBody')"
     >B</span>
     <Switch
       :model-value="rule.enabled"
       class="shrink-0 scale-75 origin-center"
-      :title="rule.enabled ? '已启用，点击禁用这条请求体规则' : '已禁用，点击启用这条请求体规则'"
+      :title="rule.enabled ? t('ui.disableThisRequestBodyRule') : t('ui.enableThisRequestBodyRule')"
       @update:model-value="(v: boolean) => $emit('update:enabled', v)"
     />
     <Select
@@ -37,22 +37,22 @@
       </SelectTrigger>
       <SelectContent>
         <SelectItem value="set">
-          覆写
+          {{ t('ui.overwrite') }}
         </SelectItem>
         <SelectItem value="drop">
-          删除
+          {{ t('ui.delete') }}
         </SelectItem>
         <SelectItem value="rename">
-          重命名
+          {{ t('ui.rename') }}
         </SelectItem>
         <SelectItem value="append">
-          追加
+          {{ t('ui.append') }}
         </SelectItem>
         <SelectItem value="insert">
-          插入
+          {{ t('ui.insert') }}
         </SelectItem>
         <SelectItem value="regex_replace">
-          正则替换
+          {{ t('ui.regexReplacement') }}
         </SelectItem>
       </SelectContent>
     </Select>
@@ -61,7 +61,7 @@
       size="icon"
       class="h-7 w-7 shrink-0"
       :class="rule.condition ? 'text-primary' : ''"
-      title="条件触发"
+      :title="t('ui.conditional')"
       @click="$emit('toggleCondition')"
     >
       <Filter class="w-3 h-3" />
@@ -69,7 +69,7 @@
     <template v-if="rule.action === 'set'">
       <Input
         :model-value="rule.path"
-        placeholder="字段路径（如 metadata.user_id）"
+        :placeholder="t('ui.fieldPathEGMetadataUserId')"
         size="sm"
         class="flex-1 min-w-0 h-7 text-xs"
         @update:model-value="(v) => $emit('update:field', 'path', v)"
@@ -91,7 +91,7 @@
     <template v-else-if="rule.action === 'drop'">
       <Input
         :model-value="rule.path"
-        placeholder="要删除的字段路径"
+        :placeholder="t('ui.fieldPathToDelete')"
         size="sm"
         class="flex-1 min-w-0 h-7 text-xs"
         @update:model-value="(v) => $emit('update:field', 'path', v)"
@@ -100,7 +100,7 @@
     <template v-else-if="rule.action === 'rename'">
       <Input
         :model-value="rule.from"
-        placeholder="原路径"
+        :placeholder="t('ui.originalPath')"
         size="sm"
         class="flex-1 min-w-0 h-7 text-xs"
         @update:model-value="(v) => $emit('update:field', 'from', v)"
@@ -108,7 +108,7 @@
       <span class="text-muted-foreground text-xs">→</span>
       <Input
         :model-value="rule.to"
-        placeholder="新路径"
+        :placeholder="t('ui.newPath')"
         size="sm"
         class="flex-1 min-w-0 h-7 text-xs"
         @update:model-value="(v) => $emit('update:field', 'to', v)"
@@ -117,7 +117,7 @@
     <template v-else-if="rule.action === 'append'">
       <Input
         :model-value="rule.path"
-        placeholder="数组路径（如 messages）"
+        :placeholder="t('ui.arrayPathEGMessages')"
         size="sm"
         class="flex-[2] min-w-0 h-7 text-xs"
         @update:model-value="(v) => $emit('update:field', 'path', v)"
@@ -125,7 +125,7 @@
       <span class="text-muted-foreground text-xs">+=</span>
       <Input
         :model-value="rule.value"
-        placeholder="值 (JSON)"
+        :placeholder="t('ui.valueJson')"
         size="sm"
         class="flex-[3] min-w-0 h-7 text-xs"
         @update:model-value="(v) => $emit('update:field', 'value', v)"
@@ -139,22 +139,22 @@
     <template v-else-if="rule.action === 'insert'">
       <Input
         :model-value="rule.path"
-        placeholder="数组路径（如 messages）"
+        :placeholder="t('ui.arrayPathEGMessages')"
         size="sm"
         class="flex-[2] min-w-0 h-7 text-xs"
         @update:model-value="(v) => $emit('update:field', 'path', v)"
       />
       <Input
         :model-value="rule.index"
-        placeholder="位置"
+        :placeholder="t('ui.position')"
         size="sm"
         class="w-14 h-7 text-xs shrink-0"
-        title="插入位置（支持负数）"
+        :title="t('ui.insertPositionNegativeIndicesSupported')"
         @update:model-value="(v) => $emit('update:field', 'index', v)"
       />
       <Input
         :model-value="rule.value"
-        placeholder="值 (JSON)"
+        :placeholder="t('ui.valueJson')"
         size="sm"
         class="flex-[3] min-w-0 h-7 text-xs"
         @update:model-value="(v) => $emit('update:field', 'value', v)"
@@ -168,14 +168,14 @@
     <template v-else-if="rule.action === 'regex_replace'">
       <Input
         :model-value="rule.path"
-        placeholder="字段路径"
+        :placeholder="t('ui.fieldPath')"
         size="sm"
         class="flex-[2] min-w-0 h-7 text-xs"
         @update:model-value="(v) => $emit('update:field', 'path', v)"
       />
       <Input
         :model-value="rule.pattern"
-        placeholder="正则"
+        :placeholder="t('ui.regex')"
         size="sm"
         class="flex-[2] min-w-0 h-7 text-xs font-mono"
         @update:model-value="(v) => $emit('update:field', 'pattern', v)"
@@ -183,7 +183,7 @@
       <span class="text-muted-foreground text-xs">→</span>
       <Input
         :model-value="rule.replacement"
-        placeholder="替换为"
+        :placeholder="t('ui.replaceWith')"
         size="sm"
         class="flex-[2] min-w-0 h-7 text-xs"
         @update:model-value="(v) => $emit('update:field', 'replacement', v)"
@@ -193,15 +193,15 @@
         placeholder="ims"
         size="sm"
         class="w-12 h-7 text-xs shrink-0 font-mono"
-        title="正则标志：i=忽略大小写 m=多行 s=dotall"
+        :title="t('ui.regexFlagsIIgnoreCaseMMultilineSDotall')"
         @update:model-value="(v) => $emit('update:field', 'flags', v)"
       />
       <Input
         :model-value="rule.count"
-        placeholder="全部"
+        :placeholder="t('ui.all5c55a67')"
         size="sm"
         class="w-14 h-7 text-xs shrink-0"
-        title="替换次数；留空=默认全部，0=全部"
+        :title="t('ui.replacementCountLeaveEmptyOrUse0ForAll')"
         @update:model-value="(v) => $emit('update:field', 'count', v)"
       />
       <CheckCircle
@@ -285,7 +285,7 @@ defineEmits<{
   remove: []
 }>()
 
-const { legacyT } = useI18n()
+const { t } = useI18n()
 
 const rowClass = computed(() => [
   !props.rule.enabled ? 'opacity-60 border-muted-foreground/25 bg-muted/20' : '',
@@ -296,12 +296,12 @@ const rowClass = computed(() => [
 // 获取正则验证提示
 function getRegexPatternValidationTip(rule: EditableBodyRule): string {
   const validation = getRegexPatternValidation(rule)
-  if (validation === null) return legacyT('输入正则表达式')
-  if (validation === true) return legacyT('有效的正则表达式')
+  if (validation === null) return t('ui.enterARegularExpression')
+  if (validation === true) return t('ui.validRegularExpression')
   try {
     new RegExp(rule.pattern.trim())
     // 正则有效但 flags 无效
-    return legacyT('无效的 flags（仅允许 i/m/s）')
+    return t('ui.invalidFlagsOnlyIMSAreAllowed')
   } catch (err: unknown) {
     return err instanceof Error ? err.message : String(err)
   }
@@ -310,21 +310,21 @@ function getRegexPatternValidationTip(rule: EditableBodyRule): string {
 // 获取验证提示
 function getBodySetValueValidationTip(rule: EditableBodyRule): string {
   const validation = getBodySetValueValidation(rule)
-  if (validation === null) return legacyT('点击验证 JSON')
+  if (validation === null) return t('ui.clickToValidateJson')
   if (validation === true) {
     const parsed = restoreOriginalPlaceholder(JSON.parse(prepareValueForJsonParse(rule.value.trim())))
     const type = Array.isArray(parsed)
-      ? legacyT('数组')
+      ? t('ui.array685bb17')
       : typeof parsed === 'object' && parsed !== null
-        ? legacyT('对象')
+        ? t('ui.object53f92c0')
         : typeof parsed === 'string'
-          ? legacyT('字符串')
+          ? t('ui.string6aaf0b1')
           : typeof parsed === 'number'
-            ? legacyT('数字')
+            ? t('ui.numberc16ec92')
             : typeof parsed === 'boolean'
-              ? legacyT('布尔')
+              ? t('ui.boolean')
               : 'null'
-    return `${legacyT('有效的 JSON')} (${type})`
+    return `${t('ui.validJson')} (${type})`
   }
   try {
     JSON.parse(prepareValueForJsonParse(rule.value.trim()))

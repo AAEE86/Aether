@@ -39,7 +39,7 @@
           </div>
           <div class="space-y-1">
             <div class="text-xs text-muted-foreground">
-              {{ legacyT('支付方式') }}
+              {{ t('ui.paymentMethod') }}
             </div>
             <div class="text-sm text-foreground">
               {{ stripeDisplayName }}
@@ -47,7 +47,7 @@
           </div>
           <div class="space-y-1">
             <div class="text-xs text-muted-foreground">
-              {{ legacyT('应付金额') }}
+              {{ t('ui.amountDue13e1d2b') }}
             </div>
             <div class="text-sm text-foreground">
               {{ stripeAmountLabel }}
@@ -55,7 +55,7 @@
           </div>
           <div class="space-y-1">
             <div class="text-xs text-muted-foreground">
-              {{ legacyT('支付通道') }}
+              {{ t('ui.paymentChannel') }}
             </div>
             <div class="flex flex-wrap gap-1.5">
               <Badge
@@ -87,7 +87,7 @@
           class="absolute inset-3 flex items-center justify-center gap-2 rounded-lg bg-background/80 text-sm text-muted-foreground backdrop-blur-sm"
         >
           <Loader2 class="h-4 w-4 animate-spin" />
-          {{ legacyT('正在加载 Stripe 支付组件...') }}
+          {{ t('ui.loadingStripePaymentComponent') }}
         </div>
       </div>
 
@@ -105,7 +105,7 @@
         :disabled="initializing || submitting"
         @click="closeDialog"
       >
-        {{ legacyT('关闭') }}
+        {{ t('ui.close') }}
       </Button>
       <Button
         :disabled="!canSubmit"
@@ -115,7 +115,7 @@
           v-if="submitting"
           class="mr-2 h-4 w-4 animate-spin"
         />
-        {{ submitting ? legacyT('支付中...') : displayConfirmText }}
+        {{ submitting ? t('ui.paying') : displayConfirmText }}
       </Button>
     </template>
   </Dialog>
@@ -143,9 +143,9 @@ interface Props {
 }
 
 const props = withDefaults(defineProps<Props>(), {
-  title: 'Stripe 支付',
-  description: '请在弹窗内完成支付，成功后系统会自动入账。',
-  confirmText: '确认支付',
+  title: undefined,
+  description: undefined,
+  confirmText: undefined,
   returnUrl: '',
 })
 
@@ -153,15 +153,15 @@ const emit = defineEmits<{
   'update:open': [value: boolean]
   success: [payload: { intentId: string; status?: string | null }]
 }>()
-const { legacyT } = useI18n()
+const { t } = useI18n()
 
 const dialogOpen = computed({
   get: () => props.open,
   set: value => emit('update:open', value),
 })
-const displayTitle = computed(() => legacyT(props.title))
-const displayDescription = computed(() => legacyT(props.description))
-const displayConfirmText = computed(() => legacyT(props.confirmText))
+const displayTitle = computed(() => props.title ?? t('ui.stripePayment'))
+const displayDescription = computed(() => props.description ?? t('ui.completeThePaymentInThisDialogTheBalanceIsCredited'))
+const displayConfirmText = computed(() => props.confirmText ?? t('ui.confirmPayment'))
 
 const paymentElementRoot = ref<HTMLDivElement | null>(null)
 const stripeInstance = ref<Stripe | null>(null)
@@ -223,7 +223,7 @@ async function initializeStripe() {
   const instructions = stripeInstructions.value
   if (!props.open) return
   if (!instructions) {
-    errorMessage.value = legacyT('缺少 Stripe 支付参数')
+    errorMessage.value = t('ui.missingStripePaymentParameters')
     return
   }
 
@@ -248,12 +248,12 @@ async function initializeStripe() {
   try {
     await nextTick()
     if (!paymentElementRoot.value) {
-      throw new Error(legacyT('支付容器未准备好'))
+      throw new Error(t('ui.paymentContainerIsNotReady'))
     }
 
     const stripe = await loadStripeCached(instructions.publishableKey)
     if (!stripe) {
-      throw new Error(legacyT('Stripe 初始化失败'))
+      throw new Error(t('ui.stripeInitializationFailed'))
     }
     if (sequence !== mountSequence) return
 
@@ -282,7 +282,7 @@ async function initializeStripe() {
 async function submitPayment() {
   const instructions = stripeInstructions.value
   if (!instructions || !stripeInstance.value || !elementsInstance.value) {
-    errorMessage.value = legacyT('Stripe 支付组件未就绪')
+    errorMessage.value = t('ui.stripePaymentComponentIsNotReady')
     return
   }
 
@@ -292,7 +292,7 @@ async function submitPayment() {
   try {
     const submitResult = await elementsInstance.value.submit()
     if (submitResult.error) {
-      errorMessage.value = submitResult.error.message || legacyT('请检查支付信息')
+      errorMessage.value = submitResult.error.message || t('ui.checkThePaymentInformation')
       return
     }
 
@@ -305,7 +305,7 @@ async function submitPayment() {
     })
 
     if (error) {
-      errorMessage.value = error.message || legacyT('支付失败')
+      errorMessage.value = error.message || t('ui.paymentFailed')
       return
     }
 
@@ -320,8 +320,8 @@ async function submitPayment() {
     }
 
     errorMessage.value = paymentIntent?.status
-      ? `${legacyT('当前支付状态')}: ${paymentIntent.status}`
-      : legacyT('支付已提交，请稍后刷新订单状态')
+      ? `${t('ui.currentPaymentStatus')}: ${paymentIntent.status}`
+      : t('ui.paymentSubmittedRefreshTheOrderStatusLater')
   } catch (error) {
     errorMessage.value = formatStripeError(error)
   } finally {
@@ -375,19 +375,19 @@ function formatStripeError(error: unknown): string {
       return message.trim()
     }
   }
-  return legacyT('Stripe 支付处理失败')
+  return t('ui.stripePaymentProcessingFailed')
 }
 
 function paymentMethodTypeLabel(method: string): string {
   const labels: Record<string, string> = {
-    card: legacyT('银行卡/信用卡'),
-    alipay: legacyT('支付宝'),
-    wechat_pay: legacyT('微信支付'),
+    card: t('ui.cardCreditCard'),
+    alipay: t('ui.alipay'),
+    wechat_pay: t('ui.wechatPay'),
     link: 'Link',
-    us_bank_account: legacyT('美国银行账户'),
+    us_bank_account: t('ui.usBankAccount'),
   }
   const fallback = paymentMethodLabel(method)
-  return labels[method] || (fallback ? legacyT(fallback) : method)
+  return labels[method] || (fallback ? fallback : method)
 }
 
 function buildReturnUrl(): string {

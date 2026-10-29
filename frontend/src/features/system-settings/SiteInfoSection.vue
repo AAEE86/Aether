@@ -1,7 +1,7 @@
 <template>
   <CardSection
-    title="站点信息"
-    description="自定义站点名称和副标题，影响导航栏、登录页、指南页面和邮件等全站显示"
+    :title="t('ui.siteInformation')"
+    :description="t('ui.customizeTheSiteNameAndSubtitleUsedAcrossTheNavigation')"
   >
     <template #actions>
       <Button
@@ -9,7 +9,7 @@
         :disabled="loading || !hasChanges"
         @click="$emit('save')"
       >
-        {{ loading ? '保存中...' : '保存' }}
+        {{ loading ? t('ui.saving') : t('ui.save') }}
       </Button>
     </template>
     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -17,9 +17,7 @@
         <Label
           for="site-name"
           class="block text-sm font-medium"
-        >
-          站点名称
-        </Label>
+        > {{ t('ui.siteName') }} </Label>
         <Input
           id="site-name"
           :model-value="siteName"
@@ -29,16 +27,14 @@
           @update:model-value="$emit('update:siteName', $event)"
         />
         <p class="mt-1 text-xs text-muted-foreground">
-          显示在导航栏、登录页标题和邮件中
+          {{ t('ui.shownInTheNavigationBarSignInPageTitleAnd') }}
         </p>
       </div>
       <div>
         <Label
           for="site-subtitle"
           class="block text-sm font-medium"
-        >
-          站点副标题
-        </Label>
+        > {{ t('ui.siteSubtitle') }} </Label>
         <Input
           id="site-subtitle"
           :model-value="siteSubtitle"
@@ -48,7 +44,7 @@
           @update:model-value="$emit('update:siteSubtitle', $event)"
         />
         <p class="mt-1 text-xs text-muted-foreground">
-          显示在导航栏品牌名称下方
+          {{ t('ui.shownBelowTheBrandNameInTheNavigationBar') }}
         </p>
       </div>
     </div>
@@ -56,6 +52,8 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+
 import Button from '@/components/ui/button.vue'
 import Input from '@/components/ui/input.vue'
 import Label from '@/components/ui/label.vue'
@@ -73,4 +71,7 @@ defineEmits<{
   'update:siteName': [value: string]
   'update:siteSubtitle': [value: string]
 }>()
+
+const { t } = useI18n()
+
 </script>

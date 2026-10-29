@@ -10,7 +10,7 @@
         class="h-7 w-7"
         :class="[nodeId ? 'text-blue-500' : '', triggerClass]"
         :disabled="saving"
-        :title="nodeId ? `代理: ${nodeName}` : '设置代理节点'"
+        :title="nodeId ? t('ui.proxyValue', { name: nodeName ?? '' }) : t('ui.setProxyNode')"
         @click.stop
       >
         <Globe class="w-3.5 h-3.5" />
@@ -23,7 +23,7 @@
     >
       <div class="space-y-2">
         <div class="flex items-center justify-between">
-          <span class="text-xs font-medium">代理节点</span>
+          <span class="text-xs font-medium">{{ t('ui.proxyNodes23f1b6a') }}</span>
           <Button
             v-if="nodeId"
             variant="ghost"
@@ -32,7 +32,7 @@
             :disabled="saving"
             @click="$emit('clear')"
           >
-            清除
+            {{ t('ui.clear') }}
           </Button>
         </div>
         <ProxyNodeSelect
@@ -41,7 +41,7 @@
           @update:model-value="(value: string) => $emit('select', value)"
         />
         <p class="text-[10px] text-muted-foreground">
-          {{ nodeId ? '当前使用独立代理' : '未设置，使用提供商级别代理' }}
+          {{ nodeId ? t('ui.currentlyUsingAnIndividualProxy') : t('ui.notSetUsesProviderLevelProxy') }}
         </p>
       </div>
     </PopoverContent>
@@ -49,6 +49,8 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+
 import { Globe } from 'lucide-vue-next'
 import { Button, Popover, PopoverContent, PopoverTrigger } from '@/components/ui'
 import ProxyNodeSelect from '@/features/providers/components/ProxyNodeSelect.vue'
@@ -71,4 +73,7 @@ defineEmits<{
   select: [nodeId: string]
   clear: []
 }>()
+
+const { t } = useI18n()
+
 </script>

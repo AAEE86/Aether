@@ -1,6 +1,10 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { setI18nLocale } from '@/i18n'
 
 import { parseBatchProxyNodeInput } from '../proxy-node-batch'
+
+beforeEach(() => setI18nLocale('zh-CN'))
+afterEach(() => setI18nLocale('zh-CN'))
 
 describe('parseBatchProxyNodeInput', () => {
   it('parses newline and comma separated proxy URLs into manual node payloads', () => {
@@ -46,5 +50,14 @@ describe('parseBatchProxyNodeInput', () => {
     expect(result.errors).toHaveLength(2)
     expect(result.errors[0]).toContain('仅支持 http/https/socks5/socks5h 协议')
     expect(result.errors[1]).toContain('必须是合法的代理 URL')
+  })
+
+  it('translates validation messages while preserving entered values and credentials', () => {
+    setI18nLocale('en-US')
+    const result = parseBatchProxyNodeInput('保存, http://%E4%BF%9D%E5%AD%98:%E5%88%A0%E9%99%A4@example.com:8080')
+    expect(result.errors).toEqual(['Entry 1 保存: Must be a valid proxy URL'])
+    expect(result.nodes[0]).toMatchObject({ username: '保存', password: '删除' })
+    expect(parseBatchProxyNodeInput('http://bad%ZZ:pass@example.com').errors[0])
+      .toContain('Username contains invalid URL encoding')
   })
 })

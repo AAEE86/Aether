@@ -18,14 +18,14 @@
                 :variant="model.is_active ? 'default' : 'secondary'"
                 class="text-xs shrink-0"
               >
-                {{ model.is_active ? '活跃' : '停用' }}
+                {{ model.is_active ? t('ui.activee85e590') : t('ui.disable4e6fd0e') }}
               </Badge>
             </div>
             <div class="flex items-center gap-2 text-sm text-muted-foreground min-w-0">
               <span class="font-mono shrink-0">{{ model.name }}</span>
               <button
                 class="p-0.5 rounded hover:bg-muted transition-colors shrink-0"
-                title="复制模型 ID"
+                :title="t('ui.copyModelId')"
                 @click="copyToClipboard(model.name)"
               >
                 <Copy class="w-3 h-3" />
@@ -43,7 +43,7 @@
             <Button
               variant="ghost"
               size="icon"
-              title="编辑模型"
+              :title="t('ui.editModel')"
               @click="$emit('editModel', model)"
             >
               <Edit class="w-4 h-4" />
@@ -51,7 +51,7 @@
             <Button
               variant="ghost"
               size="icon"
-              :title="model.is_active ? '点击停用' : '点击启用'"
+              :title="model.is_active ? t('ui.clickToDisable') : t('ui.clickToEnable')"
               @click="$emit('toggleModelStatus', model)"
             >
               <Power class="w-4 h-4" />
@@ -59,7 +59,7 @@
             <Button
               variant="ghost"
               size="icon"
-              title="关闭"
+              :title="t('ui.close')"
               @click="handleClose"
             >
               <X class="w-4 h-4" />
@@ -81,7 +81,7 @@
             ]"
             @click="detailTab = 'basic'"
           >
-            基本信息
+            {{ t('ui.basicInformation') }}
           </button>
           <button
             type="button"
@@ -93,8 +93,8 @@
             ]"
             @click="detailTab = 'routing'"
           >
-            <span class="hidden sm:inline">链路控制</span>
-            <span class="sm:hidden">链路</span>
+            <span class="hidden sm:inline">{{ t('ui.routeControl') }}</span>
+            <span class="sm:hidden">{{ t('ui.route') }}</span>
           </button>
           <button
             type="button"
@@ -106,8 +106,8 @@
             ]"
             @click="detailTab = 'mappings'"
           >
-            <span class="hidden sm:inline">模型映射</span>
-            <span class="sm:hidden">映射</span>
+            <span class="hidden sm:inline">{{ t('guide.nav.concepts.modelMapping') }}</span>
+            <span class="sm:hidden">{{ t('ui.mapping') }}</span>
           </button>
         </div>
 
@@ -119,11 +119,11 @@
           <!-- 基础属性 -->
           <div class="space-y-4">
             <h4 class="font-semibold text-sm">
-              基础属性
+              {{ t('ui.basicProperties') }}
             </h4>
             <div class="grid grid-cols-2 gap-4">
               <div>
-                <Label class="text-xs text-muted-foreground">创建时间</Label>
+                <Label class="text-xs text-muted-foreground">{{ t('ui.createdAt') }}</Label>
                 <p class="text-sm mt-1">
                   {{ formatDateOnly(model.created_at) }}
                 </p>
@@ -134,7 +134,7 @@
           <!-- 默认定价 -->
           <div class="space-y-3">
             <h4 class="font-semibold text-sm">
-              默认定价
+              {{ t('ui.defaultPricing38e2f59') }}
             </h4>
 
             <ProcessingTierPricingSummary :pricing="model.default_tiered_pricing" />
@@ -146,26 +146,26 @@
             >
               <div class="flex items-center justify-between gap-3 text-sm text-muted-foreground">
                 <div class="flex items-center gap-2">
-                  <span>图片输出计费</span>
+                  <span>{{ t('ui.imageOutputPricing') }}</span>
                   <Badge
                     v-if="imagePricingEntries.length > 0"
                     variant="outline"
                     class="text-[10px] h-5 px-1.5"
                   >
-                    矩阵
+                    {{ t('ui.matrix') }}
                   </Badge>
                   <Badge
                     v-if="imagePriceRangeEntries.length > 0"
                     variant="outline"
                     class="text-[10px] h-5 px-1.5"
                   >
-                    区间
+                    {{ t('ui.range') }}
                   </Badge>
                 </div>
                 <span
                   v-if="imageOutputDefaultPrice !== null"
                   class="text-xs font-mono"
-                >默认 ${{ imageOutputDefaultPrice.toFixed(6) }}/张</span>
+                >{{ t('ui.default') }}{{ imageOutputDefaultPrice.toFixed(6) }}{{ t('ui.imagef4878ca') }}</span>
               </div>
               <div
                 v-if="imagePricingEntries.length > 0"
@@ -175,7 +175,7 @@
                   <TableHeader>
                     <TableRow class="bg-muted/30">
                       <TableHead class="text-xs h-9">
-                        分辨率
+                        {{ t('ui.resolution') }}
                       </TableHead>
                       <TableHead
                         v-for="quality in IMAGE_OUTPUT_QUALITIES"
@@ -214,7 +214,7 @@
                   <TableHeader>
                     <TableRow class="bg-muted/30">
                       <TableHead class="text-xs h-9">
-                        上限像素
+                        {{ t('ui.maxPixels') }}
                       </TableHead>
                       <TableHead
                         v-for="quality in IMAGE_OUTPUT_QUALITIES"
@@ -255,25 +255,25 @@
               <div class="grid grid-cols-2 sm:grid-cols-2 gap-3">
                 <!-- 按 Token 计费 -->
                 <div class="p-3 rounded-lg border">
-                  <Label class="text-xs text-muted-foreground">输入价格 ($/M)</Label>
+                  <Label class="text-xs text-muted-foreground">{{ t('ui.inputPriceM') }}</Label>
                   <p class="text-lg font-semibold mt-1">
                     {{ getFirstTierPrice(model.default_tiered_pricing, 'input_price_per_1m') }}
                   </p>
                 </div>
                 <div class="p-3 rounded-lg border">
-                  <Label class="text-xs text-muted-foreground">输出价格 ($/M)</Label>
+                  <Label class="text-xs text-muted-foreground">{{ t('ui.outputPriceM') }}</Label>
                   <p class="text-lg font-semibold mt-1">
                     {{ getFirstTierPrice(model.default_tiered_pricing, 'output_price_per_1m') }}
                   </p>
                 </div>
                 <div class="p-3 rounded-lg border">
-                  <Label class="text-xs text-muted-foreground">{{ getFirst1hCachePrice(model.default_tiered_pricing) !== '-' ? '5min 缓存创建 ($/M)' : '缓存创建 ($/M)' }}</Label>
+                  <Label class="text-xs text-muted-foreground">{{ getFirst1hCachePrice(model.default_tiered_pricing) !== '-' ? t('ui.5MinuteCacheWriteM') : t('ui.cacheWriteM') }}</Label>
                   <p class="text-sm font-mono mt-1">
                     {{ getFirstTierPrice(model.default_tiered_pricing, 'cache_creation_price_per_1m') }}
                   </p>
                 </div>
                 <div class="p-3 rounded-lg border">
-                  <Label class="text-xs text-muted-foreground">缓存读取 ($/M)</Label>
+                  <Label class="text-xs text-muted-foreground">{{ t('ui.cacheReadM') }}</Label>
                   <p class="text-sm font-mono mt-1">
                     {{ getFirstTierPrice(model.default_tiered_pricing, 'cache_read_price_per_1m') }}
                   </p>
@@ -284,7 +284,7 @@
                 v-if="getFirst1hCachePrice(model.default_tiered_pricing) !== '-'"
                 class="flex items-center gap-3 p-3 rounded-lg border bg-muted/20"
               >
-                <Label class="text-xs text-muted-foreground whitespace-nowrap">1h 缓存创建</Label>
+                <Label class="text-xs text-muted-foreground whitespace-nowrap">{{ t('ui.1HourCacheWrite1528b84') }}</Label>
                 <span class="text-sm font-mono">{{ getFirst1hCachePrice(model.default_tiered_pricing) }}</span>
               </div>
               <!-- 按次计费 -->
@@ -292,8 +292,8 @@
                 v-if="model.default_price_per_request && model.default_price_per_request > 0"
                 class="flex items-center gap-3 p-3 rounded-lg border bg-muted/20"
               >
-                <Label class="text-xs text-muted-foreground whitespace-nowrap">按次计费</Label>
-                <span class="text-sm font-mono">${{ model.default_price_per_request.toFixed(3) }}/次</span>
+                <Label class="text-xs text-muted-foreground whitespace-nowrap">{{ t('ui.perRequestBilling') }}</Label>
+                <span class="text-sm font-mono">${{ model.default_price_per_request.toFixed(3) }}{{ t('ui.requestad9c0d7') }}</span>
               </div>
               <!-- 视频分辨率计费 -->
               <div
@@ -302,17 +302,17 @@
               >
                 <div class="flex items-center gap-2 text-sm text-muted-foreground">
                   <Video class="w-4 h-4" />
-                  <span>视频分辨率计费 ({{ videoPricingEntries.length }} 种)</span>
+                  <span>{{ t('ui.videoResolutionPricing') }}{{ videoPricingEntries.length }} {{ t('ui.types') }}</span>
                 </div>
                 <div class="border rounded-lg overflow-hidden">
                   <Table>
                     <TableHeader>
                       <TableRow class="bg-muted/30">
                         <TableHead class="text-xs h-9">
-                          分辨率
+                          {{ t('ui.resolution') }}
                         </TableHead>
                         <TableHead class="text-xs h-9 text-right">
-                          单价 ($/秒)
+                          {{ t('ui.unitPriceSecond2bf91c2') }}
                         </TableHead>
                       </TableRow>
                     </TableHeader>
@@ -342,7 +342,7 @@
             >
               <div class="flex items-center gap-2 text-sm text-muted-foreground">
                 <Layers class="w-4 h-4" />
-                <span>阶梯计费 ({{ getTierCount(model.default_tiered_pricing) }} 档)</span>
+                <span>{{ t('ui.tieredPricing5233988') }}{{ getTierCount(model.default_tiered_pricing) }} {{ t('ui.tiers') }}</span>
               </div>
 
               <!-- 阶梯价格表格 -->
@@ -351,22 +351,22 @@
                   <TableHeader>
                     <TableRow class="bg-muted/30">
                       <TableHead class="text-xs h-9">
-                        阶梯
+                        {{ t('ui.tier') }}
                       </TableHead>
                       <TableHead class="text-xs h-9 text-right">
-                        输入 ($/M)
+                        {{ t('ui.inputM') }}
                       </TableHead>
                       <TableHead class="text-xs h-9 text-right">
-                        输出 ($/M)
+                        {{ t('ui.outputM') }}
                       </TableHead>
                       <TableHead class="text-xs h-9 text-right">
-                        缓存创建
+                        {{ t('ui.cacheCreation') }}
                       </TableHead>
                       <TableHead class="text-xs h-9 text-right">
-                        缓存读取
+                        {{ t('ui.cacheRead1ded655') }}
                       </TableHead>
                       <TableHead class="text-xs h-9 text-right">
-                        1h 缓存
+                        {{ t('ui.1hCache') }}
                       </TableHead>
                     </TableRow>
                   </TableHeader>
@@ -381,7 +381,7 @@
                           v-if="tier.up_to === null"
                           class="text-muted-foreground"
                         >
-                          {{ index === 0 ? '所有' : `> ${formatTierLimit((model.default_tiered_pricing?.tiers || [])[index - 1]?.up_to)}` }}
+                          {{ index === 0 ? t('ui.all') : `> ${formatTierLimit((model.default_tiered_pricing?.tiers || [])[index - 1]?.up_to)}` }}
                         </span>
                         <span v-else>
                           {{ index === 0 ? '0' : formatTierLimit((model.default_tiered_pricing?.tiers || [])[index - 1]?.up_to) }} - {{ formatTierLimit(tier.up_to) }}
@@ -412,8 +412,8 @@
                 v-if="model.default_price_per_request && model.default_price_per_request > 0"
                 class="flex items-center gap-3 p-3 rounded-lg border bg-muted/20"
               >
-                <Label class="text-xs text-muted-foreground whitespace-nowrap">按次计费</Label>
-                <span class="text-sm font-mono">${{ model.default_price_per_request.toFixed(3) }}/次</span>
+                <Label class="text-xs text-muted-foreground whitespace-nowrap">{{ t('ui.perRequestBilling') }}</Label>
+                <span class="text-sm font-mono">${{ model.default_price_per_request.toFixed(3) }}{{ t('ui.requestad9c0d7') }}</span>
               </div>
               <!-- 视频分辨率计费（多阶梯时也显示） -->
               <div
@@ -422,17 +422,17 @@
               >
                 <div class="flex items-center gap-2 text-sm text-muted-foreground">
                   <Video class="w-4 h-4" />
-                  <span>视频分辨率计费 ({{ videoPricingEntries.length }} 种)</span>
+                  <span>{{ t('ui.videoResolutionPricing') }}{{ videoPricingEntries.length }} {{ t('ui.types') }}</span>
                 </div>
                 <div class="border rounded-lg overflow-hidden">
                   <Table>
                     <TableHeader>
                       <TableRow class="bg-muted/30">
                         <TableHead class="text-xs h-9">
-                          分辨率
+                          {{ t('ui.resolution') }}
                         </TableHead>
                         <TableHead class="text-xs h-9 text-right">
-                          单价 ($/秒)
+                          {{ t('ui.unitPriceSecond2bf91c2') }}
                         </TableHead>
                       </TableRow>
                     </TableHeader>
@@ -459,12 +459,12 @@
           <!-- 统计信息 -->
           <div class="space-y-3">
             <h4 class="font-semibold text-sm">
-              统计信息
+              {{ t('ui.statistics') }}
             </h4>
             <div class="grid grid-cols-2 gap-3">
               <div class="p-3 rounded-lg border bg-muted/20">
                 <div class="flex items-center justify-between">
-                  <Label class="text-xs text-muted-foreground">关联提供商</Label>
+                  <Label class="text-xs text-muted-foreground">{{ t('ui.linkedProviders') }}</Label>
                   <Building2 class="w-4 h-4 text-muted-foreground" />
                 </div>
                 <p class="text-2xl font-bold mt-1">
@@ -473,7 +473,7 @@
               </div>
               <div class="p-3 rounded-lg border bg-muted/20">
                 <div class="flex items-center justify-between">
-                  <Label class="text-xs text-muted-foreground">调用次数</Label>
+                  <Label class="text-xs text-muted-foreground">{{ t('ui.callCount') }}</Label>
                   <BarChart3 class="w-4 h-4 text-muted-foreground" />
                 </div>
                 <p class="text-2xl font-bold mt-1">
@@ -523,6 +523,8 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+
 import { ref, watch, computed } from 'vue'
 import {
   X,
@@ -573,6 +575,8 @@ const emit = defineEmits<{
   'linkProvider': [providerId: string]
   'linkProviders': [providerIds: string[]]
 }>()
+
+const { t } = useI18n()
 const { copyToClipboard } = useClipboard()
 
 interface Props {
@@ -601,7 +605,7 @@ async function loadRoutingData() {
   try {
     routingData.value = await getGlobalModelRoutingPreview(props.model.id)
   } catch (err: unknown) {
-    routingError.value = parseApiError(err, '加载失败')
+    routingError.value = parseApiError(err, t('ui.failedToLoad'))
   } finally {
     routingLoading.value = false
   }

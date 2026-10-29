@@ -163,15 +163,15 @@ export function shouldStartCodexResetCountdown(usedPercent: number | null | unde
  * 依赖当前语言与倒计时 tick，因此以 composable 形式提供给抽屉和配额摘要组件共用。
  */
 export function useProviderKeyQuotaPresentation(countdownTick: Ref<number>) {
-  const { legacyT, locale, t } = useI18n()
+  const { t } = useI18n()
 
   function getWindsurfQuotaStatusLabel(key: EndpointAPIKey): string {
     const quota = getQuotaSnapshotForProvider(key, 'windsurf')
     const label = quota?.label?.trim()
     if (label) return label
     const code = String(quota?.code || '').trim().toLowerCase()
-    if (code === 'cooldown') return legacyT('冷却中')
-    return code === 'rate_limited' || code === 'rate_limit' ? legacyT('速率受限') : legacyT('额度耗尽')
+    if (code === 'cooldown') return t('ui.coolingDown')
+    return code === 'rate_limited' || code === 'rate_limit' ? t('ui.rateLimited6d5ac6f') : t('ui.quotaExhausted')
   }
 
   // 格式化 Kiro 重置时间
@@ -183,22 +183,22 @@ export function useProviderKeyQuotaPresentation(countdownTick: Ref<number>) {
     const diff = ts - now
 
     if (diff <= 0) {
-      return legacyT('已重置')
+      return t('ui.resetd2cd2e2')
     }
 
     const days = Math.floor(diff / (1000 * 60 * 60 * 24))
     const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60))
 
     if (days > 0) {
-      return locale.value === 'en-US' ? `${days}d ${hours}h later` : `${days}天${hours}小时后`
+      return t('providers.migration.inDH7c851c', { value: String(days), value_2: String(hours) })
     }
 
     const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60))
     if (hours > 0) {
-      return locale.value === 'en-US' ? `${hours}h ${minutes}m later` : `${hours}小时${minutes}分钟后`
+      return t('providers.migration.inHMa5cdb9', { value: String(hours), value_2: String(minutes) })
     }
 
-    return locale.value === 'en-US' ? `${minutes}m later` : `${minutes}分钟后`
+    return t('providers.migration.inM4a30cd', { value: String(minutes) })
   }
 
   function getVisibleClaudeCodeResetCreditItems(key: EndpointAPIKey) {
@@ -206,7 +206,7 @@ export function useProviderKeyQuotaPresentation(countdownTick: Ref<number>) {
       getClaudeCodeResetCreditsDisplay(key),
       undefined,
       5,
-      legacyT('Claude 重置机会'),
+      t('ui.claudeQuotaReset'),
     )
   }
 
@@ -256,13 +256,13 @@ export function useProviderKeyQuotaPresentation(countdownTick: Ref<number>) {
     if (!updatedAt || typeof updatedAt !== 'number') return ''
     const now = Math.floor(Date.now() / 1000)
     const diff = now - updatedAt
-    if (diff <= 60) return legacyT('刚刚更新')
+    if (diff <= 60) return t('ui.updatedJustNow')
     const minutes = Math.floor(diff / 60)
-    if (minutes < 60) return locale.value === 'en-US' ? `${minutes}m ago` : `${minutes}分钟前更新`
+    if (minutes < 60) return t('providers.migration.updatedMAgo5a936d', { value: String(minutes) })
     const hours = Math.floor(minutes / 60)
-    if (hours < 24) return locale.value === 'en-US' ? `${hours}h ago` : `${hours}小时前更新`
+    if (hours < 24) return t('providers.migration.updatedHAgoa88c4a', { value: String(hours) })
     const days = Math.floor(hours / 24)
-    return locale.value === 'en-US' ? `${days}d ago` : `${days}天前更新`
+    return t('providers.migration.updatedDAgo68d95f', { value: String(days) })
   }
 
   function getAntigravityQuotaGroupItems(key: EndpointAPIKey): AntigravityQuotaItem[] {
@@ -315,7 +315,7 @@ export function useProviderKeyQuotaPresentation(countdownTick: Ref<number>) {
       toCodexRemainingPercent(usedPercent)
     )
     if (!status) return ''
-    return status.isExpired ? legacyT(status.text) : `${legacyT(status.text)} ${legacyT('后重置')}`
+    return status.isExpired ? status.text : `${status.text} ${t('ui.untilReset')}`
   }
 
   function getCodexQuotaResetText(
@@ -327,7 +327,7 @@ export function useProviderKeyQuotaPresentation(countdownTick: Ref<number>) {
     if (resetAt || resetSecs) {
       return getResetCountdownText(resetAt, resetSecs, updatedAt, usedPercent)
     }
-    return legacyT('已重置')
+    return t('ui.resetd2cd2e2')
   }
 
   function getResetCountdownClass(
@@ -356,12 +356,12 @@ export function useProviderKeyQuotaPresentation(countdownTick: Ref<number>) {
     const minutes = Math.floor((seconds % 3600) / 60)
 
     if (days > 0) {
-      return locale.value === 'en-US' ? `${days}d ${hours}h` : `${days}天 ${hours}小时`
+      return t('providers.migration.dH1f8c72', { value: String(days), value_2: String(hours) })
     }
     if (hours > 0) {
-      return locale.value === 'en-US' ? `${hours}h ${minutes}m` : `${hours}小时 ${minutes}分钟`
+      return t('providers.migration.hMeeb579', { value: String(hours), value_2: String(minutes) })
     }
-    return locale.value === 'en-US' ? `${minutes}m` : `${minutes}分钟`
+    return t('providers.migration.m248510', { value: String(minutes) })
   }
 
   function hasAntigravityQuotaDisplayData(key: EndpointAPIKey): boolean {

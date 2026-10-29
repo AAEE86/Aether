@@ -12,17 +12,17 @@
         <div class="flex items-start justify-between gap-3">
           <div class="min-w-0">
             <h3 class="text-lg font-semibold text-foreground leading-tight">
-              流水详情
+              {{ t('ui.transactionDetails') }}
             </h3>
             <p class="text-xs text-muted-foreground">
-              资金动作审计信息
+              {{ t('ui.financialTransactionAuditDetails') }}
             </p>
           </div>
           <Button
             variant="ghost"
             size="icon"
             class="h-9 w-9 shrink-0"
-            title="关闭"
+            :title="t('ui.close')"
             @click="$emit('close')"
           >
             <X class="h-4 w-4" />
@@ -56,7 +56,7 @@
         <div class="grid gap-3 sm:grid-cols-2">
           <div class="rounded-xl border border-border/60 p-3">
             <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-              归属
+              {{ t('ui.owner1e9b3dc') }}
             </div>
             <div class="mt-1 text-sm font-medium">
               {{ ownerDisplayName(ledger.owner_name, ledger.owner_type) }}
@@ -74,7 +74,7 @@
           </div>
           <div class="rounded-xl border border-border/60 p-3">
             <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-              余额变化
+              {{ t('ui.balanceChanges') }}
             </div>
             <div class="mt-1 text-sm font-medium tabular-nums">
               {{ ledger.balance_before.toFixed(4) }} → {{ ledger.balance_after.toFixed(4) }}
@@ -83,8 +83,7 @@
               v-if="ledger.recharge_balance_before !== null && ledger.recharge_balance_before !== undefined && ledger.gift_balance_before !== null && ledger.gift_balance_before !== undefined"
               class="mt-1 text-xs text-muted-foreground tabular-nums"
             >
-              充 {{ Number(ledger.recharge_balance_before).toFixed(4) }}→{{ Number(ledger.recharge_balance_after ?? 0).toFixed(4) }}
-              · 赠 {{ Number(ledger.gift_balance_before).toFixed(4) }}→{{ Number(ledger.gift_balance_after ?? 0).toFixed(4) }}
+              {{ t('ui.paid') }} {{ Number(ledger.recharge_balance_before).toFixed(4) }}→{{ Number(ledger.recharge_balance_after ?? 0).toFixed(4) }} {{ t('ui.gift') }} {{ Number(ledger.gift_balance_before).toFixed(4) }}→{{ Number(ledger.gift_balance_after ?? 0).toFixed(4) }}
             </div>
           </div>
         </div>
@@ -92,7 +91,7 @@
         <div class="grid gap-3 sm:grid-cols-2">
           <div class="rounded-xl border border-border/60 p-3">
             <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-              关联类型
+              {{ t('ui.referenceType') }}
             </div>
             <div class="mt-1 text-sm font-medium break-all">
               {{ walletLinkTypeLabel(ledger.link_type) }}
@@ -100,7 +99,7 @@
           </div>
           <div class="rounded-xl border border-border/60 p-3">
             <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-              交易ID
+              {{ t('ui.transactionId') }}
             </div>
             <div class="mt-1 text-sm font-mono break-all">
               {{ ledger.id }}
@@ -114,19 +113,19 @@
         >
           <div class="rounded-xl border border-border/60 p-3">
             <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-              支付方式
+              {{ t('ui.paymentMethod') }}
             </div>
             <div class="mt-1 text-sm font-medium">
-              <span v-if="loadingOrderNo">加载中...</span>
+              <span v-if="loadingOrderNo">{{ t('common.loading') }}</span>
               <span v-else>{{ paymentMethod ? paymentMethodLabel(paymentMethod) : '-' }}</span>
             </div>
           </div>
           <div class="rounded-xl border border-border/60 p-3">
             <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-              充值订单号
+              {{ t('ui.topUpOrderNumber') }}
             </div>
             <div class="mt-1 text-sm font-mono break-all">
-              <span v-if="loadingOrderNo">加载中...</span>
+              <span v-if="loadingOrderNo">{{ t('common.loading') }}</span>
               <span v-else>{{ paymentOrderNo || '-' }}</span>
             </div>
           </div>
@@ -134,10 +133,10 @@
 
         <div class="rounded-xl border border-border/60 p-3">
           <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-            操作用户
+            {{ t('ui.performedBy') }}
           </div>
           <div class="mt-1 text-sm font-medium">
-            {{ ledger.operator_name || (ledger.operator_id ? '已删除用户' : '系统自动') }}
+            {{ ledger.operator_name || (ledger.operator_id ? t('ui.deletedUser') : t('ui.systemccc7d7c')) }}
           </div>
           <div class="mt-1 text-xs text-muted-foreground">
             ID: {{ ledger.operator_id || '-' }}
@@ -146,13 +145,13 @@
             v-if="ledger.operator_email"
             class="mt-1 text-xs text-muted-foreground"
           >
-            邮箱: {{ ledger.operator_email }}
+            {{ t('ui.email6a174ee') }} {{ ledger.operator_email }}
           </div>
         </div>
 
         <div class="rounded-xl border border-border/60 p-3">
           <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-            说明
+            {{ t('ui.description') }}
           </div>
           <div class="mt-1 text-sm text-foreground whitespace-pre-wrap break-words">
             {{ ledger.description || '-' }}
@@ -164,6 +163,8 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+
 import { ref, watch } from 'vue'
 import { X } from 'lucide-vue-next'
 import { Badge, Button } from '@/components/ui'
@@ -191,6 +192,8 @@ const props = defineProps<{
 defineEmits<{
   close: []
 }>()
+
+const { t } = useI18n()
 
 const loadingOrderNo = ref(false)
 const paymentOrderNo = ref<string | null>(null)
@@ -237,4 +240,5 @@ watch(() => [props.open, props.ledger] as const, ([open, ledger]) => {
   paymentMethod.value = null
   void resolveRechargeOrderNo(ledger)
 }, { immediate: true })
+
 </script>

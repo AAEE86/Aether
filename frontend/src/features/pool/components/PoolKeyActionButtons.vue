@@ -14,7 +14,7 @@
         variant="ghost"
         size="icon"
         class="h-7 w-7 shrink-0"
-        title="下载 OAuth 授权文件"
+        :title="t('ui.downloadOauthAuthorizationFile')"
         @click.stop="$emit('download')"
       >
         <Download class="w-3.5 h-3.5" />
@@ -24,7 +24,7 @@
         variant="ghost"
         size="icon"
         class="h-7 w-7 shrink-0"
-        title="复制密钥"
+        :title="t('ui.copyKey')"
         @click.stop="$emit('copy')"
       >
         <Copy class="w-3.5 h-3.5" />
@@ -48,7 +48,7 @@
         variant="ghost"
         size="icon"
         class="h-7 w-7 shrink-0 text-muted-foreground hover:text-green-600"
-        title="清除冷却"
+        :title="t('ui.clearCooldown')"
         @click="$emit('clearCooldown')"
       >
         <RefreshCw class="w-3.5 h-3.5" />
@@ -58,7 +58,7 @@
         variant="ghost"
         size="icon"
         class="h-7 w-7 shrink-0"
-        title="模型权限"
+        :title="t('guide.nav.concepts.modelPermission')"
         @click="$emit('permissions')"
       >
         <Shield class="w-3.5 h-3.5" />
@@ -80,7 +80,7 @@
         size="icon"
         class="h-7 w-7 shrink-0 text-muted-foreground hover:text-foreground"
         :disabled="resettingCycle"
-        title="重置周期统计"
+        :title="t('ui.resetCycleStatistics')"
         :data-testid="layout === 'desktop' ? 'pool-reset-cycle-stats' : undefined"
         @click="$emit('resetCycleStats')"
       >
@@ -94,7 +94,7 @@
         variant="ghost"
         size="icon"
         class="h-7 w-7 shrink-0"
-        title="编辑账号"
+        :title="t('ui.editAccount')"
         @click="$emit('edit')"
       >
         <SquarePen class="w-3.5 h-3.5" />
@@ -105,8 +105,8 @@
         size="icon"
         class="h-7 w-7 shrink-0 text-foreground hover:text-foreground"
         :disabled="toggling"
-        :title="poolKey.is_active ? '禁用' : '启用'"
-        :aria-label="poolKey.is_active ? '禁用账号' : '启用账号'"
+        :title="poolKey.is_active ? t('ui.disable') : t('ui.enablef4f0ead')"
+        :aria-label="poolKey.is_active ? t('ui.disableAccount') : t('ui.enableAccount')"
         :data-testid="`pool-toggle-active-${layout}-${poolKey.key_id}`"
         @click="$emit('toggleActive')"
       >
@@ -118,7 +118,7 @@
         size="icon"
         class="h-7 w-7 shrink-0 text-destructive hover:text-destructive"
         :disabled="deleting"
-        title="删除账号"
+        :title="t('ui.deleteAccount')"
         @click="$emit('delete')"
       >
         <Trash2 class="w-3.5 h-3.5" />
@@ -128,6 +128,8 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+
 import { Copy, Download, Power, RefreshCw, RotateCcw, Shield, SquarePen, Trash2 } from 'lucide-vue-next'
 import { Button } from '@/components/ui'
 import type { PoolKeyDetail } from '@/api/endpoints/pool'
@@ -180,4 +182,7 @@ defineEmits<{
   selectProxy: [nodeId: string]
   clearProxy: []
 }>()
+
+const { t } = useI18n()
+
 </script>

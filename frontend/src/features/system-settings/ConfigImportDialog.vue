@@ -2,8 +2,8 @@
   <!-- 导入配置对话框 -->
   <Dialog
     :open="importDialogOpen"
-    title="导入配置"
-    description="选择冲突处理模式并确认导入"
+    :title="t('ui.importConfiguration')"
+    :description="t('ui.chooseHowToHandleConflictsAndConfirmTheImport')"
     @update:open="$emit('update:importDialogOpen', $event)"
   >
     <div class="space-y-4">
@@ -12,31 +12,29 @@
         class="text-sm"
       >
         <p class="font-medium mb-2">
-          配置预览
+          {{ t('ui.configurationPreview') }}
         </p>
         <ul class="space-y-1 text-muted-foreground">
-          <li>全局模型: {{ importPreview.global_models?.length || 0 }} 个</li>
-          <li>提供商: {{ importPreview.providers?.length || 0 }} 个</li>
+          <li>{{ t('ui.globalModels') }} {{ importPreview.global_models?.length || 0 }} {{ t('ui.items3a11681') }}</li>
+          <li>{{ t('ui.providers') }} {{ importPreview.providers?.length || 0 }} {{ t('ui.items3a11681') }}</li>
+          <li> {{ t('ui.endpoints') }} {{ importPreview.providers?.reduce((sum: number, p: { endpoints?: unknown[] }) => sum + (p.endpoints?.length || 0), 0) }} {{ t('ui.items3a11681') }} </li>
           <li>
-            端点: {{ importPreview.providers?.reduce((sum: number, p: { endpoints?: unknown[] }) => sum + (p.endpoints?.length || 0), 0) }} 个
-          </li>
-          <li>
-            API Keys: {{ importPreview.providers?.reduce((sum: number, p: { api_keys?: unknown[] }) => sum + (p.api_keys?.length || 0), 0) }} 个
+            API Keys: {{ importPreview.providers?.reduce((sum: number, p: { api_keys?: unknown[] }) => sum + (p.api_keys?.length || 0), 0) }} {{ t('ui.items3a11681') }}
           </li>
           <li v-if="importPreview.proxy_nodes?.length">
-            代理节点: {{ importPreview.proxy_nodes.length }} 个
+            {{ t('ui.proxyNodes') }} {{ importPreview.proxy_nodes.length }} {{ t('ui.items3a11681') }}
           </li>
           <li v-if="importPreview.ldap_config">
-            LDAP 配置: 1 个
+            {{ t('ui.ldapConfigurations1') }}
           </li>
           <li v-if="importPreview.oauth_providers?.length">
-            OAuth Providers: {{ importPreview.oauth_providers.length }} 个
+            OAuth Providers: {{ importPreview.oauth_providers.length }} {{ t('ui.items3a11681') }}
           </li>
         </ul>
       </div>
 
       <div>
-        <Label class="block text-sm font-medium mb-2">冲突处理模式</Label>
+        <Label class="block text-sm font-medium mb-2">{{ t('ui.conflictHandling') }}</Label>
         <Select
           :model-value="mergeMode"
           :open="mergeModeSelectOpen"
@@ -48,31 +46,31 @@
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="skip">
-              跳过 - 保留现有配置
+              {{ t('ui.skipAndKeepExistingConfiguration') }}
             </SelectItem>
             <SelectItem value="overwrite">
-              覆盖 - 用导入配置替换
+              {{ t('ui.overwriteWithImportedConfiguration') }}
             </SelectItem>
             <SelectItem value="error">
-              报错 - 遇到冲突时中止
+              {{ t('ui.abortIfAConflictIsFound') }}
             </SelectItem>
           </SelectContent>
         </Select>
         <p class="mt-1 text-xs text-muted-foreground">
           <template v-if="mergeMode === 'skip'">
-            已存在的配置将被保留，仅导入新配置
+            {{ t('ui.keepExistingConfigurationAndImportOnlyNewEntries') }}
           </template>
           <template v-else-if="mergeMode === 'overwrite'">
-            已存在的配置将被导入的配置覆盖
+            {{ t('ui.replaceExistingConfigurationWithImportedConfiguration') }}
           </template>
           <template v-else>
-            如果发现任何冲突，导入将在写入前预检并中止
+            {{ t('ui.conflictsAreCheckedBeforeAnyDataIsWrittenTheImport') }}
           </template>
         </p>
       </div>
 
       <p class="text-xs text-muted-foreground">
-        注意：相同的 API Keys 会自动跳过，不会创建重复记录。
+        {{ t('ui.duplicateApiKeysAreSkippedAutomaticallyNoDuplicateRecordsAre') }}
       </p>
 
       <div
@@ -97,13 +95,13 @@
         variant="outline"
         @click="$emit('update:importDialogOpen', false); $emit('update:mergeModeSelectOpen', false)"
       >
-        取消
+        {{ t('common.cancel') }}
       </Button>
       <Button
         :disabled="importLoading"
         @click="$emit('confirm')"
       >
-        {{ importLoading ? '导入中...' : '确认导入' }}
+        {{ importLoading ? t('ui.importingc70b341') : t('ui.confirmImport') }}
       </Button>
     </template>
   </Dialog>
@@ -111,7 +109,7 @@
   <!-- 导入结果对话框 -->
   <Dialog
     :open="importResultDialogOpen"
-    title="导入完成"
+    :title="t('ui.importCompleted613fef')"
     @update:open="$emit('update:importResultDialogOpen', $event)"
   >
     <div
@@ -121,32 +119,26 @@
       <div class="grid grid-cols-2 gap-4 text-sm">
         <div>
           <p class="font-medium">
-            全局模型
+            {{ t('ui.globalModel') }}
           </p>
           <p class="text-muted-foreground">
-            创建: {{ importResult.stats.global_models.created }},
-            更新: {{ importResult.stats.global_models.updated }},
-            跳过: {{ importResult.stats.global_models.skipped }}
+            {{ t('ui.created64aefde') }} {{ importResult.stats.global_models.created }}{{ t('ui.updated') }} {{ importResult.stats.global_models.updated }}{{ t('ui.skipped') }} {{ importResult.stats.global_models.skipped }}
           </p>
         </div>
         <div>
           <p class="font-medium">
-            提供商
+            {{ t('nav.providers') }}
           </p>
           <p class="text-muted-foreground">
-            创建: {{ importResult.stats.providers.created }},
-            更新: {{ importResult.stats.providers.updated }},
-            跳过: {{ importResult.stats.providers.skipped }}
+            {{ t('ui.created64aefde') }} {{ importResult.stats.providers.created }}{{ t('ui.updated') }} {{ importResult.stats.providers.updated }}{{ t('ui.skipped') }} {{ importResult.stats.providers.skipped }}
           </p>
         </div>
         <div>
           <p class="font-medium">
-            端点
+            {{ t('ui.endpoint52fff16') }}
           </p>
           <p class="text-muted-foreground">
-            创建: {{ importResult.stats.endpoints.created }},
-            更新: {{ importResult.stats.endpoints.updated }},
-            跳过: {{ importResult.stats.endpoints.skipped }}
+            {{ t('ui.created64aefde') }} {{ importResult.stats.endpoints.created }}{{ t('ui.updated') }} {{ importResult.stats.endpoints.updated }}{{ t('ui.skipped') }} {{ importResult.stats.endpoints.skipped }}
           </p>
         </div>
         <div>
@@ -154,28 +146,23 @@
             API Keys
           </p>
           <p class="text-muted-foreground">
-            创建: {{ importResult.stats.keys.created }},
-            跳过: {{ importResult.stats.keys.skipped }}
+            {{ t('ui.created64aefde') }} {{ importResult.stats.keys.created }}{{ t('ui.skipped') }} {{ importResult.stats.keys.skipped }}
           </p>
         </div>
         <div class="col-span-2">
           <p class="font-medium">
-            模型配置
+            {{ t('ui.modelConfiguration') }}
           </p>
           <p class="text-muted-foreground">
-            创建: {{ importResult.stats.models.created }},
-            更新: {{ importResult.stats.models.updated }},
-            跳过: {{ importResult.stats.models.skipped }}
+            {{ t('ui.created64aefde') }} {{ importResult.stats.models.created }}{{ t('ui.updated') }} {{ importResult.stats.models.updated }}{{ t('ui.skipped') }} {{ importResult.stats.models.skipped }}
           </p>
         </div>
         <div v-if="importResult.stats.ldap">
           <p class="font-medium">
-            LDAP 配置
+            {{ t('ui.ldapConfiguration') }}
           </p>
           <p class="text-muted-foreground">
-            创建: {{ importResult.stats.ldap.created }},
-            更新: {{ importResult.stats.ldap.updated }},
-            跳过: {{ importResult.stats.ldap.skipped }}
+            {{ t('ui.created64aefde') }} {{ importResult.stats.ldap.created }}{{ t('ui.updated') }} {{ importResult.stats.ldap.updated }}{{ t('ui.skipped') }} {{ importResult.stats.ldap.skipped }}
           </p>
         </div>
         <div v-if="importResult.stats.oauth">
@@ -183,19 +170,15 @@
             OAuth Providers
           </p>
           <p class="text-muted-foreground">
-            创建: {{ importResult.stats.oauth.created }},
-            更新: {{ importResult.stats.oauth.updated }},
-            跳过: {{ importResult.stats.oauth.skipped }}
+            {{ t('ui.created64aefde') }} {{ importResult.stats.oauth.created }}{{ t('ui.updated') }} {{ importResult.stats.oauth.updated }}{{ t('ui.skipped') }} {{ importResult.stats.oauth.skipped }}
           </p>
         </div>
         <div v-if="importResult.stats.proxy_nodes">
           <p class="font-medium">
-            代理节点
+            {{ t('ui.proxyNodes23f1b6a') }}
           </p>
           <p class="text-muted-foreground">
-            创建: {{ importResult.stats.proxy_nodes.created }},
-            更新: {{ importResult.stats.proxy_nodes.updated }},
-            跳过: {{ importResult.stats.proxy_nodes.skipped }}
+            {{ t('ui.created64aefde') }} {{ importResult.stats.proxy_nodes.created }}{{ t('ui.updated') }} {{ importResult.stats.proxy_nodes.updated }}{{ t('ui.skipped') }} {{ importResult.stats.proxy_nodes.skipped }}
           </p>
         </div>
       </div>
@@ -205,7 +188,7 @@
         class="p-3 bg-destructive/10 rounded-lg"
       >
         <p class="font-medium text-destructive mb-2">
-          警告信息
+          {{ t('ui.warnings') }}
         </p>
         <ul class="text-sm text-destructive space-y-1">
           <li
@@ -220,13 +203,15 @@
 
     <template #footer>
       <Button @click="$emit('update:importResultDialogOpen', false)">
-        确定
+        {{ t('ui.confirmfac2a67') }}
       </Button>
     </template>
   </Dialog>
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+
 import Button from '@/components/ui/button.vue'
 import Label from '@/components/ui/label.vue'
 import Select from '@/components/ui/select.vue'
@@ -256,4 +241,7 @@ defineEmits<{
   'update:mergeMode': [value: 'skip' | 'overwrite' | 'error']
   'update:mergeModeSelectOpen': [value: boolean]
 }>()
+
+const { t } = useI18n()
+
 </script>

@@ -1,3 +1,4 @@
+import { getI18nLocale, translate, type Locale, type MessageKey } from '@/i18n'
 import type { PoolKeyDetail } from '@/api/endpoints/pool'
 import { buildPoolMobileTagItems } from '@/features/pool/utils/poolMobilePresentation'
 import type { PoolMobileTagItem, PoolMobileTagTone } from '@/features/pool/utils/poolMobilePresentation'
@@ -6,7 +7,6 @@ import { formatOAuthPlanType } from '@/features/providers/utils/oauthPlanType'
 import { getProviderAuthLabel } from '@/features/providers/utils/providerKeyAuth'
 import {
   getAccountStatusDisplay,
-  getAccountStatusTitle,
   getOAuthRefreshButtonTitle as resolveOAuthRefreshButtonTitle,
   getOAuthStatusDisplayWithFallback,
   getOAuthStatusTitle as resolveOAuthStatusTitle,
@@ -17,39 +17,39 @@ import { getQuotaSnapshot, resolvePoolKeyPlanType } from './poolKeyQuotaProgress
 export type PoolKeyScore = NonNullable<PoolKeyDetail['pool_score']>
 
 export const poolScoreHardStateOptions = [
-  { value: 'all', label: '全部状态' },
-  { value: 'available', label: '可用' },
-  { value: 'unknown', label: '未知' },
-  { value: 'cooldown', label: '冷却' },
-  { value: 'quota_exhausted', label: '额度耗尽' },
-  { value: 'auth_invalid', label: '授权无效' },
-  { value: 'banned', label: '封禁' },
-  { value: 'inactive', label: '禁用' },
+  { value: 'all', get label() { return translate('ui.allStatuses') } },
+  { value: 'available', get label() { return translate('ui.available4d99c97') } },
+  { value: 'unknown', get label() { return translate('chart.unknown') } },
+  { value: 'cooldown', get label() { return translate('ui.cooldown') } },
+  { value: 'quota_exhausted', get label() { return translate('ui.quotaExhausted') } },
+  { value: 'auth_invalid', get label() { return translate('ui.invalidAuthorization') } },
+  { value: 'banned', get label() { return translate('ui.banned') } },
+  { value: 'inactive', get label() { return translate('ui.disable') } },
 ]
 
 export const poolScoreProbeStatusOptions = [
-  { value: 'all', label: '全部探测' },
-  { value: 'never', label: '未探测' },
-  { value: 'ok', label: '正常' },
-  { value: 'failed', label: '失败' },
-  { value: 'stale', label: '过期' },
-  { value: 'in_progress', label: '探测中' },
+  { value: 'all', get label() { return translate('ui.allProbes') } },
+  { value: 'never', get label() { return translate('ui.notProbed') } },
+  { value: 'ok', get label() { return translate('ui.normal') } },
+  { value: 'failed', get label() { return translate('ui.failed28384d7') } },
+  { value: 'stale', get label() { return translate('ui.expired97399bd') } },
+  { value: 'in_progress', get label() { return translate('ui.probing') } },
 ]
 
 export const COOLDOWN_REASON_MAP: Record<string, string> = {
-  rate_limited_429: '429 限流',
-  forbidden_403: '403 禁止',
-  overloaded_529: '529 过载',
-  auth_failed_401: '401 认证失败',
-  payment_required_402: '402 欠费',
-  server_error_500: '500 错误',
-  request_timeout_408: '408 超时',
-  conflict_409: '409 冲突',
-  locked_423: '423 锁定',
+  get rate_limited_429() { return translate('ui.429RateLimited') },
+  get forbidden_403() { return translate('ui.403Forbidden') },
+  get overloaded_529() { return translate('ui.529Overloaded') },
+  get auth_failed_401() { return translate('ui.401Unauthorized') },
+  get payment_required_402() { return translate('ui.402PaymentRequired') },
+  get server_error_500() { return translate('ui.500ServerError') },
+  get request_timeout_408() { return translate('ui.408RequestTimeout') },
+  get conflict_409() { return translate('ui.409Conflict') },
+  get locked_423() { return translate('ui.423Locked') },
   too_early_425: '425 Too Early',
-  bad_gateway_502: '502 网关错误',
-  service_unavailable_503: '503 服务不可用',
-  gateway_timeout_504: '504 网关超时',
+  get bad_gateway_502() { return translate('ui.502BadGateway') },
+  get service_unavailable_503() { return translate('ui.503ServiceUnavailable') },
+  get gateway_timeout_504() { return translate('ui.504GatewayTimeout') },
 }
 
 export function formatCooldownReason(reason: string): string {
@@ -111,32 +111,42 @@ export function getSchedulingStatus(key: PoolKeyDetail, tick: number): 'availabl
 }
 
 export function compactPoolStatusLabel(label: string | null | undefined): string | null {
-  const normalized = String(label || '').trim()
+  const rawLabel = String(label || '')
+  const normalized = rawLabel.trim()
   if (!normalized) return null
 
-  const mapped: Record<string, string> = {
-    'Token 失效': '已失效',
-    'Token 过期': '已过期',
-    Token失效: '已失效',
-    Token过期: '已过期',
-    账号已封禁: '账号封禁',
-    工作区已停用: '工作区停用',
-    账号访问受限: '访问受限',
-    健康度较低: '健康低',
+  const knownLabels: Record<string, MessageKey> = {
+    'Token 失效': 'ui.invalid',
+    'Token 过期': 'ui.expired',
+    Token失效: 'ui.invalid',
+    Token过期: 'ui.expired',
+    账号已封禁: 'ui.accountBanned',
+    账号封禁: 'ui.accountBanned',
+    工作区已停用: 'ui.workspaceDisabled',
+    工作区停用: 'ui.workspaceDisabled',
+    账号访问受限: 'ui.accessRestricted',
+    访问受限: 'ui.accessRestricted',
+    账号停用: 'ui.accountDisabled',
+    需要验证: 'ui.verificationRequired',
+    账号隔离: 'ui.accountIsolation',
+    账号异常: 'ui.accountIssue',
+    健康度较低: 'ui.lowHealth',
   }
-  const labelText = mapped[normalized] || normalized
-  return Array.from(labelText).slice(0, 5).join('')
+  const key = knownLabels[normalized]
+  // Unknown labels may be server or user content. Do not truncate them or
+  // attempt to infer a translation from their text.
+  return key ? translate(key) : rawLabel
 }
 
 export function getOAuthStatusBadgeLabel(status: ReturnType<typeof getVisibleOAuthState>): string | null {
   if (!status) return null
-  if (status.requiresReauth) return '续期失败'
-  if (status.isInvalid) return '已失效'
-  if (status.isExpired) return '已过期'
-  if (status.text === '未添加') return '未添加'
-  if (status.text === '有效期未知') return '未知'
-  if (status.isExpiringSoon) return '将过期'
-  return '有效'
+  if (status.requiresReauth) return translate('ui.renewalFailed')
+  if (status.isInvalid) return translate('ui.invalid')
+  if (status.isExpired) return translate('ui.expired')
+  if (status.kind === 'missing_refresh_token') return translate('ui.notAdded')
+  if (status.kind === 'unknown_expiration') return translate('chart.unknown')
+  if (status.isExpiringSoon) return translate('ui.expiringSoon')
+  return translate('ui.valid')
 }
 
 export function getBlockingOAuthStatusLabel(key: PoolKeyDetail, tick: number): string | null {
@@ -151,28 +161,66 @@ export function isPoolKeyCostExhausted(key: PoolKeyDetail): boolean {
     && key.cost_window_usage >= key.cost_limit
 }
 
+const schedulingLabelKeys: Partial<Record<string, MessageKey>> = {
+  available: 'ui.available4d99c97',
+  inactive: 'ui.disabledbc5a87a',
+  manual_disabled: 'ui.disable',
+  cooldown: 'ui.coolingDown',
+  account_quota_exhausted: 'ui.quotaExhausted',
+  cost_exhausted: 'ui.limitExceeded',
+  invalid: 'ui.invalid',
+  expired: 'ui.expired',
+  banned: 'ui.accountBanned',
+  forbidden: 'ui.accessRestricted',
+  quarantined: 'ui.accountIsolation',
+  rate_limited: 'ui.rateLimited6d5ac6f',
+  oauth_token_invalid: 'ui.invalid',
+  oauth_token_expired: 'ui.expired',
+  account_banned: 'ui.accountBanned',
+  account_suspended: 'ui.accountBanned',
+  account_disabled: 'ui.accountDisabled',
+  workspace_deactivated: 'ui.workspaceDisabled',
+  account_forbidden: 'ui.accessRestricted',
+  account_verification: 'ui.verificationRequired',
+  account_quarantined: 'ui.accountIsolation',
+  account_blocked: 'ui.accountIssue',
+  quota_exhausted: 'ui.quotaExhausted',
+}
+
+function getKnownSchedulingLabel(code: string | null | undefined): string | null {
+  const key = schedulingLabelKeys[String(code || '').trim().toLowerCase()]
+  return key ? translate(key) : null
+}
+
 export function getSchedulingBadgeLabel(key: PoolKeyDetail, tick: number): string {
   const accountAlert = getAccountAlertLabel(key)
   if (accountAlert) return compactPoolStatusLabel(accountAlert) || accountAlert
   const oauthAlert = getBlockingOAuthStatusLabel(key, tick)
   if (oauthAlert) return oauthAlert
 
-  const rawLabel = String(key.scheduling_label || '').trim()
+  const knownLabel = getKnownSchedulingLabel(getVisibleSchedulingReason(key))
+  if (knownLabel) {
+    if (key.scheduling_reason === 'available' && isPoolKeyCostExhausted(key)) return translate('ui.limitExceeded')
+    return knownLabel
+  }
+
+  const rawLabel = String(key.scheduling_label || '')
+  const normalizedLabel = rawLabel.trim()
   if (
-    rawLabel
+    normalizedLabel
     && !isHealthDerivedSchedulingReason(key.scheduling_reason)
     && !isHealthDerivedSchedulingLabel(rawLabel)
   ) {
-    if ((rawLabel === '可用' || key.scheduling_reason === 'available') && isPoolKeyCostExhausted(key)) {
-      return '超限'
+    if ((normalizedLabel === '可用' || key.scheduling_reason === 'available') && isPoolKeyCostExhausted(key)) {
+      return translate('ui.limitExceeded')
     }
-    if (rawLabel === '禁用' || rawLabel === '停用') return '禁用'
+    if (normalizedLabel === '禁用' || normalizedLabel === '停用') return translate('ui.disable')
     return compactPoolStatusLabel(rawLabel) || rawLabel
   }
 
-  if (!key.is_active) return '已禁用'
-  if (key.cooldown_reason) return '冷却中'
-  return '可用'
+  if (!key.is_active) return translate('ui.disabledbc5a87a')
+  if (key.cooldown_reason) return translate('ui.coolingDown')
+  return translate('ui.available4d99c97')
 }
 
 export function getSchedulingBadgeVariant(key: PoolKeyDetail, tick: number): PoolStatusVariant {
@@ -204,7 +252,7 @@ export function getSchedulingTitle(key: PoolKeyDetail, tick: number): string {
     return reasons.map((item) => {
       const ttl = item.ttl_seconds && item.ttl_seconds > 0 ? ` (${formatTTL(item.ttl_seconds)})` : ''
       const detail = item.detail ? ` - ${item.detail}` : ''
-      return `${item.label}${ttl}${detail}`
+      return `${getKnownSchedulingLabel(item.code) ?? item.label}${ttl}${detail}`
     }).join('\n')
   }
 
@@ -212,7 +260,7 @@ export function getSchedulingTitle(key: PoolKeyDetail, tick: number): string {
     const ttl = key.cooldown_ttl_seconds ? ` (${formatTTL(key.cooldown_ttl_seconds)})` : ''
     return `${formatCooldownReason(key.cooldown_reason)}${ttl}`
   }
-  if (isPoolKeyCostExhausted(key)) return '超限'
+  if (isPoolKeyCostExhausted(key)) return translate('ui.limitExceeded')
   return getSchedulingBadgeLabel(key, tick)
 }
 
@@ -256,7 +304,7 @@ export function getMobileTagItems(key: PoolKeyDetail, tick: number): PoolMobileT
     authLabel: getAuthTypeChipLabel(key),
     planLabel: planType ? formatOAuthPlanType(planType) : null,
     orgLabel: orgBadge?.label ?? null,
-    proxyLabel: key.proxy?.node_id ? '独立代理' : null,
+    proxyLabel: key.proxy?.node_id ? translate('ui.dedicatedProxy') : null,
   })
 }
 
@@ -288,7 +336,7 @@ export function getOAuthStatusTitle(key: PoolKeyDetail, tick: number): string {
   return resolveOAuthStatusTitle(key, tick)
 }
 
-export const _accountAlertCache = new WeakMap<PoolKeyDetail, string | null>()
+export const _accountAlertCache = new WeakMap<PoolKeyDetail, Partial<Record<Locale, string | null>>>()
 
 export function getQuotaAlertSnapshotState(key: PoolKeyDetail): { label: string, title: string } | null {
   const quota = getQuotaSnapshot(key)
@@ -297,16 +345,8 @@ export function getQuotaAlertSnapshotState(key: PoolKeyDetail): { label: string,
   const code = String(quota.code || '').trim().toLowerCase()
   if (!['banned', 'forbidden', 'quarantined', 'rate_limited', 'exhausted'].includes(code)) return null
 
-  let label = String(quota.label || '').trim()
-  if (!label) {
-    if (code === 'banned') label = '账号封禁'
-    else if (code === 'forbidden') label = '访问受限'
-    else if (code === 'quarantined') label = '账号隔离'
-    else if (code === 'rate_limited') label = '速率受限'
-    else label = '额度耗尽'
-  } else if (label === '账号已封禁' || label === '封禁') {
-    label = '账号封禁'
-  }
+  const knownLabel = getKnownSchedulingLabel(code === 'exhausted' ? 'account_quota_exhausted' : code)
+  const label = knownLabel ?? String(quota.label || '').trim()
 
   const reason = String(quota.reason || '').trim()
   return {
@@ -316,19 +356,23 @@ export function getQuotaAlertSnapshotState(key: PoolKeyDetail): { label: string,
 }
 
 export function getAccountAlertLabel(key: PoolKeyDetail): string | null {
-  const cached = _accountAlertCache.get(key)
+  const locale = getI18nLocale()
+  const cached = _accountAlertCache.get(key)?.[locale]
   if (cached !== undefined) return cached
 
-  let result: string | null = getAccountStatusDisplay(key).label
+  const account = getAccountStatusDisplay(key)
+  let result: string | null = (account.blocked || account.label)
+    ? getKnownSchedulingLabel(account.code) ?? account.label
+    : null
   const quotaAlert = getQuotaAlertSnapshotState(key)
   if (!result && quotaAlert) result = quotaAlert.label
   if (!result && !getQuotaSnapshot(key)) {
     const quotaText = getLegacyAccountQuotaText(key)
-    if (quotaText === '账号已封禁' || quotaText === '封禁') result = '账号封禁'
-    else if (quotaText === '访问受限') result = '访问受限'
+    if (quotaText === '账号已封禁' || quotaText === '封禁') result = translate('ui.accountBanned')
+    else if (quotaText === '访问受限') result = translate('ui.accessRestricted')
   }
 
-  _accountAlertCache.set(key, result)
+  _accountAlertCache.set(key, { ..._accountAlertCache.get(key), [locale]: result })
   return result
 }
 
@@ -336,8 +380,10 @@ export function getAccountAlertTitle(key: PoolKeyDetail): string {
   const label = getAccountAlertLabel(key)
   if (!label) return ''
 
-  const accountTitle = getAccountStatusTitle(key)
-  if (accountTitle) return accountTitle
+  const account = getAccountStatusDisplay(key)
+  if (account.blocked && account.label) {
+    return account.reason ? `${label}: ${account.reason}` : label
+  }
 
   const quotaAlert = getQuotaAlertSnapshotState(key)
   if (quotaAlert?.title) return quotaAlert.title
@@ -361,7 +407,7 @@ export function formatPoolScore(value: number | null | undefined): string {
 }
 
 export function formatPoolScoreReason(value: PoolKeyScore['score_reason'] | null | undefined): string {
-  if (!value) return '暂无计算结果'
+  if (!value) return translate('ui.noCalculationResults')
   try {
     return JSON.stringify(value, null, 2)
   } catch {

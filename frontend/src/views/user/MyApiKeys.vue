@@ -9,7 +9,7 @@
       <div class="px-4 sm:px-6 py-3 sm:py-3.5 border-b border-border/60">
         <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-4">
           <h3 class="text-sm sm:text-base font-semibold shrink-0">
-            我的 API Keys
+            {{ t('ui.myApiKeys') }}
           </h3>
 
           <!-- 操作按钮 -->
@@ -19,7 +19,7 @@
               variant="ghost"
               size="icon"
               class="h-8 w-8"
-              title="创建新 API Key"
+              :title="t('ui.createNewApiKey')"
               @click="openCreateApiKeyDialog"
             >
               <Plus class="w-3.5 h-3.5" />
@@ -39,7 +39,7 @@
         v-if="loading"
         class="flex items-center justify-center py-12"
       >
-        <LoadingState message="加载中..." />
+        <LoadingState :message="t('common.loading')" />
       </div>
 
       <!-- 空状态 -->
@@ -48,8 +48,8 @@
         class="flex items-center justify-center py-12"
       >
         <EmptyState
-          title="暂无 API 密钥"
-          description="创建你的第一个 API 密钥开始使用"
+          :title="t('ui.noApiKeys')"
+          :description="t('ui.createYourFirstApiKeyToGetStarted')"
           :icon="Key"
         >
           <template #actions>
@@ -58,8 +58,7 @@
               class="shadow-lg shadow-primary/20"
               @click="openCreateApiKeyDialog"
             >
-              <Plus class="mr-2 h-4 w-4" />
-              创建新 API Key
+              <Plus class="mr-2 h-4 w-4" /> {{ t('ui.createNewApiKey') }}
             </Button>
           </template>
         </EmptyState>
@@ -74,25 +73,25 @@
           <TableHeader>
             <TableRow class="border-b border-border/60 hover:bg-transparent">
               <TableHead class="min-w-[200px] h-12 font-semibold">
-                密钥名称
+                {{ t('ui.keyName') }}
               </TableHead>
               <TableHead class="min-w-[160px] h-12 font-semibold">
-                密钥
+                {{ t('ui.key') }}
               </TableHead>
               <TableHead class="min-w-[100px] h-12 font-semibold">
-                费用(USD)
+                {{ t('ui.costUsd') }}
               </TableHead>
               <TableHead class="min-w-[100px] h-12 font-semibold">
-                请求次数
+                {{ t('ui.requestCount') }}
               </TableHead>
               <TableHead class="min-w-[70px] h-12 font-semibold text-center">
-                状态
+                {{ t('ui.status6320b4a') }}
               </TableHead>
               <TableHead class="min-w-[100px] h-12 font-semibold">
-                最后使用
+                {{ t('ui.lastUsed') }}
               </TableHead>
               <TableHead class="min-w-[80px] h-12 font-semibold text-center">
-                操作
+                {{ t('ui.actionsed31fbb') }}
               </TableHead>
             </TableRow>
           </TableHeader>
@@ -112,13 +111,13 @@
                     {{ apiKey.name }}
                   </div>
                   <div class="text-xs text-muted-foreground mt-0.5 truncate">
-                    策略分组：{{ apiKeyRoutingGroupName(apiKey) }}
+                    {{ t('ui.policyGroup') }}{{ apiKeyRoutingGroupName(apiKey) }}
                   </div>
                   <div class="text-xs text-muted-foreground mt-0.5">
-                    创建于 {{ formatDateOnly(apiKey.created_at) }}
+                    {{ t('ui.createdAtdc4d662') }} {{ formatDateOnly(apiKey.created_at) }}
                   </div>
                   <div class="text-xs text-muted-foreground mt-0.5 truncate">
-                    IP 限制：{{ formatIpRules(apiKey.ip_rules) }}
+                    {{ t('ui.ipRestrictions') }}{{ formatIpRules(apiKey.ip_rules) }}
                   </div>
                 </div>
               </TableCell>
@@ -133,7 +132,7 @@
                     variant="ghost"
                     size="icon"
                     class="h-6 w-6"
-                    title="复制完整密钥"
+                    :title="t('ui.copyFullKey')"
                     @click="copyApiKey(apiKey)"
                   >
                     <Copy class="h-3.5 w-3.5" />
@@ -165,14 +164,14 @@
                     :variant="apiKey.is_active ? 'success' : 'secondary'"
                     class="h-5 px-2 py-0 text-[10px] font-medium"
                   >
-                    {{ apiKey.is_active ? '活跃' : '禁用' }}
+                    {{ apiKey.is_active ? t('ui.activee85e590') : t('ui.disable') }}
                   </Badge>
                   <Badge
                     v-if="apiKey.is_locked"
                     variant="warning"
                     class="h-5 px-2 py-0 text-[10px] font-medium"
                   >
-                    已锁定
+                    {{ t('ui.locked') }}
                   </Badge>
                   <Badge
                     variant="secondary"
@@ -191,7 +190,7 @@
 
               <!-- 最后使用时间 -->
               <TableCell class="py-4 text-sm text-muted-foreground">
-                {{ apiKey.last_used_at ? formatTimeAgo(apiKey.last_used_at) : '从未使用' }}
+                {{ apiKey.last_used_at ? formatTimeAgo(apiKey.last_used_at) : t('ui.neverUsed') }}
               </TableCell>
 
               <!-- 操作按钮 -->
@@ -202,7 +201,7 @@
                     variant="ghost"
                     size="icon"
                     class="h-8 w-8"
-                    title="导入到 CC Switch"
+                    :title="t('ui.importIntoCcSwitch')"
                     @click="openCcSwitchImportDialog(apiKey)"
                   >
                     <Download class="h-4 w-4" />
@@ -211,7 +210,7 @@
                     variant="ghost"
                     size="icon"
                     class="h-8 w-8"
-                    title="一键安装并配置 CLI"
+                    :title="t('ui.oneClickInstallAndConfigureCli')"
                     @click="openInstallDialog(apiKey)"
                   >
                     <Terminal class="h-4 w-4" />
@@ -220,7 +219,7 @@
                     variant="ghost"
                     size="icon"
                     class="h-8 w-8"
-                    :title="apiKey.is_locked ? '已锁定' : '编辑'"
+                    :title="apiKey.is_locked ? t('ui.locked') : t('ui.edit0518365')"
                     :disabled="apiKey.is_locked"
                     @click="openEditApiKeyDialog(apiKey)"
                   >
@@ -230,7 +229,7 @@
                     variant="ghost"
                     size="icon"
                     class="h-8 w-8"
-                    :title="apiKey.is_locked ? '已锁定' : (apiKey.is_active ? '禁用' : '启用')"
+                    :title="apiKey.is_locked ? t('ui.locked') : (apiKey.is_active ? t('ui.disable') : t('ui.enablef4f0ead'))"
                     :disabled="apiKey.is_locked"
                     @click="toggleApiKey(apiKey)"
                   >
@@ -240,7 +239,7 @@
                     variant="ghost"
                     size="icon"
                     class="h-8 w-8"
-                    :title="apiKey.is_locked ? '已锁定' : '删除'"
+                    :title="apiKey.is_locked ? t('ui.locked') : t('ui.delete')"
                     :disabled="apiKey.is_locked"
                     @click="confirmDelete(apiKey)"
                   >
@@ -275,14 +274,14 @@
                   :variant="apiKey.is_active ? 'success' : 'secondary'"
                   class="text-xs px-1.5 py-0"
                 >
-                  {{ apiKey.is_active ? '活跃' : '禁用' }}
+                  {{ apiKey.is_active ? t('ui.activee85e590') : t('ui.disable') }}
                 </Badge>
                 <Badge
                   v-if="apiKey.is_locked"
                   variant="warning"
                   class="text-[10px] px-1.5 py-0"
                 >
-                  已锁定
+                  {{ t('ui.locked') }}
                 </Badge>
                 <Badge
                   variant="secondary"
@@ -303,7 +302,7 @@
                   variant="ghost"
                   size="icon"
                   class="h-7 w-7"
-                  title="导入到 CC Switch"
+                  :title="t('ui.importIntoCcSwitch')"
                   @click="openCcSwitchImportDialog(apiKey)"
                 >
                   <Download class="h-3.5 w-3.5" />
@@ -312,7 +311,7 @@
                   variant="ghost"
                   size="icon"
                   class="h-7 w-7"
-                  title="一键安装并配置 CLI"
+                  :title="t('ui.oneClickInstallAndConfigureCli')"
                   @click="openInstallDialog(apiKey)"
                 >
                   <Terminal class="h-3.5 w-3.5" />
@@ -321,7 +320,7 @@
                   variant="ghost"
                   size="icon"
                   class="h-7 w-7"
-                  :title="apiKey.is_locked ? '已锁定' : '编辑'"
+                  :title="apiKey.is_locked ? t('ui.locked') : t('ui.edit0518365')"
                   :disabled="apiKey.is_locked"
                   @click="openEditApiKeyDialog(apiKey)"
                 >
@@ -331,7 +330,7 @@
                   variant="ghost"
                   size="icon"
                   class="h-7 w-7"
-                  title="复制"
+                  :title="t('common.copy')"
                   @click="copyApiKey(apiKey)"
                 >
                   <Copy class="h-3.5 w-3.5" />
@@ -340,7 +339,7 @@
                   variant="ghost"
                   size="icon"
                   class="h-7 w-7"
-                  :title="apiKey.is_locked ? '已锁定' : (apiKey.is_active ? '禁用' : '启用')"
+                  :title="apiKey.is_locked ? t('ui.locked') : (apiKey.is_active ? t('ui.disable') : t('ui.enablef4f0ead'))"
                   :disabled="apiKey.is_locked"
                   @click="toggleApiKey(apiKey)"
                 >
@@ -350,7 +349,7 @@
                   variant="ghost"
                   size="icon"
                   class="h-7 w-7"
-                  :title="apiKey.is_locked ? '已锁定' : '删除'"
+                  :title="apiKey.is_locked ? t('ui.locked') : t('ui.delete')"
                   :disabled="apiKey.is_locked"
                   @click="confirmDelete(apiKey)"
                 >
@@ -362,13 +361,13 @@
             <!-- 第二行：密钥、时间、统计 -->
             <div class="space-y-1.5">
               <div class="text-xs text-muted-foreground truncate">
-                策略分组：{{ apiKeyRoutingGroupName(apiKey) }}
+                {{ t('ui.policyGroup') }}{{ apiKeyRoutingGroupName(apiKey) }}
               </div>
               <div class="flex items-center gap-2 text-xs">
                 <code class="font-mono text-muted-foreground">{{ apiKey.key_display || 'sk-••••••••' }}</code>
                 <span class="text-muted-foreground">•</span>
                 <span class="text-muted-foreground">
-                  {{ apiKey.last_used_at ? formatTimeAgo(apiKey.last_used_at) : '从未使用' }}
+                  {{ apiKey.last_used_at ? formatTimeAgo(apiKey.last_used_at) : t('ui.neverUsed') }}
                 </span>
               </div>
               <div class="flex items-center gap-3 text-xs">
@@ -377,15 +376,14 @@
                 </span>
                 <span class="text-muted-foreground">•</span>
                 <span class="text-foreground font-medium">
-                  {{ formatNumber(apiKey.total_requests || 0) }} 次
-                </span>
+                  {{ formatNumber(apiKey.total_requests || 0) }} {{ t('ui.times') }} </span>
                 <span class="text-muted-foreground">•</span>
                 <span class="text-muted-foreground">
                   {{ formatRateLimitSimple(apiKey.rate_limit) }}
                 </span>
               </div>
               <div class="text-xs text-muted-foreground truncate">
-                IP 限制：{{ formatIpRules(apiKey.ip_rules) }}
+                {{ t('ui.ipRestrictions') }}{{ formatIpRules(apiKey.ip_rules) }}
               </div>
             </div>
           </div>
@@ -414,10 +412,10 @@
             </div>
             <div class="flex-1 min-w-0">
               <h3 class="text-lg font-semibold text-foreground leading-tight">
-                {{ editingApiKey ? '编辑 API 密钥' : '创建 API 密钥' }}
+                {{ editingApiKey ? t('ui.editApiKey') : t('ui.createApiKey') }}
               </h3>
               <p class="text-xs text-muted-foreground">
-                {{ editingApiKey ? '更新密钥名称、速率限制和并发限制' : '创建一个新的密钥用于访问 API 服务' }}
+                {{ editingApiKey ? t('ui.updateTheKeyNameRateLimitAndConcurrencyLimit') : t('ui.createAKeyToAccessTheApi') }}
               </p>
             </div>
           </div>
@@ -429,17 +427,17 @@
           <Label
             for="key-name"
             class="text-sm font-semibold"
-          >密钥名称</Label>
+          >{{ t('ui.keyName') }}</Label>
           <Input
             id="key-name"
             v-model="newKeyName"
-            placeholder="例如：生产环境密钥"
+            :placeholder="t('ui.eGProductionKey')"
             class="h-11 border-border/60"
             autocomplete="off"
             required
           />
           <p class="text-xs text-muted-foreground">
-            给密钥起一个有意义的名称方便识别
+            {{ t('ui.useADescriptiveNameToIdentifyThisKey') }}
           </p>
         </div>
 
@@ -447,35 +445,35 @@
           <Label
             for="key-routing-group"
             class="text-sm font-semibold"
-          >策略分组</Label>
+          >{{ t('ui.policyGroups') }}</Label>
           <Select
             v-model="newKeyRoutingGroup"
             :disabled="routingGroupsLoading || Boolean(routingGroupsError) || creating"
           >
             <SelectTrigger
               id="key-routing-group"
-              aria-label="策略分组"
+              :aria-label="t('ui.policyGroups')"
               class="h-11 border-border/60"
             >
               <SelectValue>{{ selectedRoutingGroupLabel }}</SelectValue>
             </SelectTrigger>
             <SelectContent>
               <SelectItem :value="DEFAULT_ROUTING_GROUP">
-                跟随默认
+                {{ t('ui.useDefaulta44f9f9') }}
               </SelectItem>
               <SelectItem
                 v-if="unavailableRoutingGroup"
                 :value="unavailableRoutingGroup.id"
                 disabled
               >
-                {{ unavailableRoutingGroup.name }}（当前绑定）
+                {{ unavailableRoutingGroup.name }}{{ t('ui.currentlyAssigned') }}
               </SelectItem>
               <SelectItem
                 v-for="group in routingGroups"
                 :key="group.id"
                 :value="group.id"
               >
-                {{ group.name }} · {{ group.billing_multiplier }} 倍{{ group.is_default ? ' · 默认' : '' }}
+                {{ group.name }} · {{ group.billing_multiplier }} {{ t('ui.multiplierSuffix') }}{{ group.is_default ? " " + t('ui.defaulte99c9aa') : '' }}
               </SelectItem>
             </SelectContent>
           </Select>
@@ -483,27 +481,27 @@
             v-if="routingGroupsLoading"
             class="text-xs text-muted-foreground"
           >
-            正在加载策略分组…
+            {{ t('ui.loadingPolicyGroups') }}
           </p>
           <div
             v-else-if="routingGroupsError"
             class="flex items-center justify-between gap-2 text-xs text-muted-foreground"
           >
-            <span role="status">{{ routingGroupsError }}，当前选择保持不变。</span>
+            <span role="status">{{ routingGroupsError }}{{ t('ui.theCurrentSelectionIsUnchanged') }}</span>
             <Button
               variant="ghost"
               size="sm"
               class="h-6 shrink-0 px-2 text-xs"
               @click="loadRoutingGroups"
             >
-              重试
+              {{ t('vscodex.connection.retry') }}
             </Button>
           </div>
           <p
             v-else
             class="text-xs text-muted-foreground"
           >
-            {{ unavailableRoutingGroup ? '当前分组已不可用，请选择其他分组或跟随默认。' : routingGroups.length ? '选择此密钥使用的调度与计费策略；跟随默认会使用管理员设置的默认调度。' : '暂无可选策略分组，可使用默认调度。' }}
+            {{ unavailableRoutingGroup ? t('ui.theCurrentGroupIsNoLongerAvailableSelectAnotherGroup') : routingGroups.length ? t('ui.chooseTheSchedulingAndBillingPolicyForThisKeyUse') : t('ui.noPolicyGroupsAreAvailableYouCanUseDefaultScheduling') }}
           </p>
         </div>
 
@@ -511,19 +509,19 @@
           <Label
             for="key-rate-limit"
             class="text-sm font-semibold"
-          >速率限制 (请求/分钟)</Label>
+          >{{ t('ui.rateLimitRequestsMin') }}</Label>
           <Input
             id="key-rate-limit"
             :model-value="newKeyRateLimit ?? ''"
             type="number"
             min="0"
             max="10000"
-            placeholder="留空不限"
+            :placeholder="t('ui.leaveEmptyForUnlimited')"
             class="h-11 border-border/60"
             @update:model-value="(v) => newKeyRateLimit = parseNumberInput(v, { min: 0, max: 10000 })"
           />
           <p class="text-xs text-muted-foreground">
-            留空不限
+            {{ t('ui.leaveEmptyForUnlimited') }}
           </p>
         </div>
 
@@ -531,19 +529,19 @@
           <Label
             for="key-concurrent-limit"
             class="text-sm font-semibold"
-          >并发限制</Label>
+          >{{ t('ui.concurrencyLimit') }}</Label>
           <Input
             id="key-concurrent-limit"
             :model-value="newKeyConcurrentLimit ?? ''"
             type="number"
             min="0"
             max="10000"
-            placeholder="0 = 不限并发"
+            :placeholder="t('ui.0UnlimitedConcurrency')"
             class="h-11 border-border/60"
             @update:model-value="(v) => newKeyConcurrentLimit = parseNumberInput(v, { min: 0, max: 10000 })"
           />
           <p class="text-xs text-muted-foreground">
-            {{ editingApiKey ? '留空表示保持当前值，填 0 表示不限并发' : '留空表示不限并发，填 0 也表示不限并发' }}
+            {{ editingApiKey ? t('ui.leaveEmptyToKeepTheCurrentValueEnter0For') : t('ui.leaveEmptyForUnlimitedConcurrency0IsAlsoUnlimited') }}
           </p>
         </div>
 
@@ -551,25 +549,25 @@
           <Label
             for="key-ip-rules"
             class="text-sm font-semibold"
-          >IP 限制</Label>
+          >{{ t('ui.ipRestrictions477036d') }}</Label>
           <Input
             id="key-ip-rules"
             v-model="newKeyIpRulesText"
-            placeholder="例如：203.0.113.10, 10.0.0.0/24, !10.0.0.13"
+            :placeholder="t('ui.eG20301131010000')"
             class="h-11 border-border/60"
             autocomplete="off"
           />
           <p class="text-xs text-muted-foreground">
-            留空表示不限制；支持 IP、CIDR、IPv4 通配符、*，用 ! 前缀拒绝，多个规则用英文逗号分隔
+            {{ t('ui.leaveEmptyForNoRestrictionSupportsIpCidrIpv4Wildcardsc2888de') }}
           </p>
         </div>
 
         <div class="rounded-lg border border-border/60 bg-muted/30 p-4">
           <div class="flex items-center justify-between gap-4">
             <div>
-              <Label class="text-sm font-semibold">敏感信息保护</Label>
+              <Label class="text-sm font-semibold">{{ t('ui.sensitiveInformationProtection') }}</Label>
               <p class="mt-1 text-xs text-muted-foreground">
-                {{ keyRedactionMode === 'inherit' ? '默认跟随账户设置' : '管理员开启功能后生效' }}
+                {{ keyRedactionMode === 'inherit' ? t('ui.usesAccountSettingsByDefault') : t('ui.takesEffectAfterAnAdministratorEnablesThisFeature') }}
               </p>
             </div>
             <div class="flex items-center gap-2">
@@ -578,14 +576,14 @@
                 :variant="keyRedactionMode === 'inherit' ? 'default' : 'outline'"
                 @click="keyRedactionMode = 'inherit'"
               >
-                跟随账户
+                {{ t('ui.useAccountSettings') }}
               </Button>
               <Button
                 size="sm"
                 :variant="keyRedactionMode === 'custom' ? 'default' : 'outline'"
                 @click="keyRedactionMode = 'custom'"
               >
-                单独配置
+                {{ t('ui.separateConfiguration') }}
               </Button>
             </div>
           </div>
@@ -594,9 +592,9 @@
             class="mt-4 flex items-center justify-between gap-4 border-t border-border/50 pt-4"
           >
             <div>
-              <Label class="text-sm font-medium">启用保护</Label>
+              <Label class="text-sm font-medium">{{ t('ui.enableProtection') }}</Label>
               <p class="mt-1 text-xs text-muted-foreground">
-                只影响此 API Key
+                {{ t('ui.appliesOnlyToThisApiKey') }}
               </p>
             </div>
             <Switch v-model="newKeyRedactionEnabled" />
@@ -606,9 +604,9 @@
             class="mt-4 flex items-center justify-between gap-4 border-t border-border/50 pt-4"
           >
             <div>
-              <Label class="text-sm font-medium">占位符说明</Label>
+              <Label class="text-sm font-medium">{{ t('ui.placeholderNotes') }}</Label>
               <p class="mt-1 text-xs text-muted-foreground">
-                向模型说明占位符含义
+                {{ t('ui.explainPlaceholderMeaningToTheModel') }}
               </p>
             </div>
             <Switch v-model="newKeyRedactionInjectNotice" />
@@ -622,7 +620,7 @@
           class="h-11 px-6"
           @click="closeApiKeyDialog"
         >
-          取消
+          {{ t('common.cancel') }}
         </Button>
         <Button
           class="h-11 px-6 shadow-lg shadow-primary/20"
@@ -633,7 +631,7 @@
             v-if="creating"
             class="animate-spin h-4 w-4 mr-2"
           />
-          {{ creating ? (editingApiKey ? '保存中...' : '创建中...') : (editingApiKey ? '保存' : '创建') }}
+          {{ creating ? (editingApiKey ? t('ui.saving') : t('ui.creating')) : (editingApiKey ? t('ui.save') : t('ui.create')) }}
         </Button>
       </template>
     </Dialog>
@@ -651,10 +649,10 @@
             </div>
             <div class="flex-1 min-w-0">
               <h3 class="text-lg font-semibold text-foreground leading-tight">
-                创建成功
+                {{ t('ui.createdSuccessfully') }}
               </h3>
               <p class="text-xs text-muted-foreground">
-                请妥善保管, 切勿泄露给他人
+                {{ t('ui.storeItSecurelyAndDoNotShareIt') }}
               </p>
             </div>
           </div>
@@ -663,7 +661,7 @@
 
       <div class="space-y-4">
         <div class="space-y-2">
-          <Label class="text-sm font-medium">API 密钥</Label>
+          <Label class="text-sm font-medium">{{ t('nav.apiKeys') }}</Label>
           <div class="flex items-center gap-2">
             <Input
               type="text"
@@ -676,7 +674,7 @@
               class="h-11"
               @click="copyToClipboard(newKeyValue)"
             >
-              复制
+              {{ t('common.copy') }}
             </Button>
           </div>
         </div>
@@ -690,14 +688,13 @@
           :disabled="!createdApiKey || !newKeyValue"
           @click="openCcSwitchImportDialogForCreatedKey"
         >
-          <Download class="h-4 w-4" />
-          导入 CC Switch
+          <Download class="h-4 w-4" /> {{ t('ui.importIntoCcSwitch0e05066') }}
         </Button>
         <Button
           class="h-10 px-5"
           @click="closeCreatedKeyDialog"
         >
-          确定
+          {{ t('ui.confirmfac2a67') }}
         </Button>
       </template>
     </Dialog>
@@ -715,10 +712,10 @@
             </div>
             <div class="flex-1 min-w-0">
               <h3 class="text-lg font-semibold text-foreground leading-tight">
-                导入到 CC Switch
+                {{ t('ui.importIntoCcSwitch') }}
               </h3>
               <p class="text-xs text-muted-foreground truncate">
-                当前密钥：{{ selectedCcSwitchApiKey?.name || '未选择' }}
+                {{ t('ui.currentKey') }}{{ selectedCcSwitchApiKey?.name || t('ui.notSelected') }}
               </p>
             </div>
           </div>
@@ -727,11 +724,11 @@
 
       <div class="space-y-5">
         <div class="rounded-lg border border-border/60 bg-muted/30 p-3 text-xs text-muted-foreground">
-          选择目标客户端和模型 ID。点击导入后浏览器会请求打开 CC Switch，本页面不会展示或保存包含 API Key 的链接。
+          {{ t('ui.selectAClientAndModelIdImportOpensCcSwitch') }}
         </div>
 
         <div class="space-y-2">
-          <Label class="text-sm font-semibold">目标客户端</Label>
+          <Label class="text-sm font-semibold">{{ t('ui.targetClient') }}</Label>
           <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
             <Button
               v-for="option in ccSwitchTargetOptions"
@@ -750,7 +747,7 @@
           <Label
             for="ccswitch-provider-name"
             class="text-sm font-semibold"
-          >站点名称</Label>
+          >{{ t('ui.siteName') }}</Label>
           <Input
             id="ccswitch-provider-name"
             :model-value="ccSwitchProviderName"
@@ -763,7 +760,7 @@
 
         <div class="space-y-3">
           <Label class="text-sm font-semibold">
-            {{ ccSwitchTargetApp === 'claude' ? '模型 ID 选择' : '模型 ID' }}
+            {{ ccSwitchTargetApp === 'claude' ? t('ui.modelSelection') : t('ui.modelId') }}
           </Label>
 
           <div class="space-y-3">
@@ -787,11 +784,11 @@
                   :data-testid="`ccswitch-model-select-${field.key}`"
                   class="h-11 rounded-2xl border-border/60 bg-card/80 font-mono text-xs"
                 >
-                  <SelectValue placeholder="选择模型 ID" />
+                  <SelectValue :placeholder="t('ui.selectModelId')" />
                 </SelectTrigger>
                 <SelectContent
                   class="max-w-[min(26rem,calc(100vw-4rem))] max-h-[22rem]"
-                  search-placeholder="搜索模型 ID..."
+                  :search-placeholder="t('ui.searchModelIds')"
                   :search-threshold="4"
                 >
                   <SelectItem
@@ -815,7 +812,7 @@
             v-if="!ccSwitchPreparing && !ccSwitchHasModelOptions"
             class="text-xs text-destructive"
           >
-            暂无可用模型，请联系管理员配置可用模型后再导入。
+            {{ t('ui.noModelsAvailableAskAnAdministratorToConfigureModelsBefore') }}
           </p>
         </div>
 
@@ -823,7 +820,7 @@
           v-if="ccSwitchPreparing"
           class="text-xs text-muted-foreground"
         >
-          正在加载导入配置...
+          {{ t('ui.loadingImportSettings') }}
         </div>
       </div>
 
@@ -833,7 +830,7 @@
           class="h-10 px-5"
           @click="showCcSwitchDialog = false"
         >
-          关闭
+          {{ t('ui.close') }}
         </Button>
         <Button
           data-testid="ccswitch-confirm"
@@ -845,7 +842,7 @@
             v-if="ccSwitchLoading"
             class="animate-spin h-4 w-4 mr-2"
           />
-          {{ ccSwitchLoading ? '准备中...' : '导入到 CC Switch' }}
+          {{ ccSwitchLoading ? t('ui.preparing') : t('ui.importIntoCcSwitch') }}
         </Button>
       </template>
     </Dialog>
@@ -861,9 +858,9 @@
     <AlertDialog
       v-model="showDeleteDialog"
       type="danger"
-      title="确认删除"
-      :description="`确定要删除密钥 &quot;${keyToDelete?.name}&quot; 吗？此操作不可恢复。`"
-      confirm-text="删除"
+      :title="t('ui.confirmDeletion')"
+      :description="t('ui.deleteKeyValueThisCannotBeUndone', { name: keyToDelete?.name ?? '' })"
+      :confirm-text="t('ui.delete')"
       :loading="deleting"
       @confirm="deleteApiKey"
       @cancel="showDeleteDialog = false"
@@ -872,6 +869,9 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+const { t } = useI18n()
+
 import { ref, onMounted, computed, watch, reactive } from 'vue'
 import { meApi, type ApiKey, type UserRoutingGroup } from '@/api/me'
 import Card from '@/components/ui/card.vue'
@@ -971,7 +971,7 @@ const unavailableRoutingGroup = computed(() => {
     : null
 })
 const selectedRoutingGroupLabel = computed(() => {
-  if (newKeyRoutingGroup.value === DEFAULT_ROUTING_GROUP) return '跟随默认'
+  if (newKeyRoutingGroup.value === DEFAULT_ROUTING_GROUP) return t('ui.useDefaulta44f9f9')
   const group = routingGroups.value.find(group => group.id === newKeyRoutingGroup.value)
   return group ? `${group.name} · ${group.billing_multiplier} 倍` : unavailableRoutingGroup.value?.name ?? '已选择分组'
 })
@@ -1004,15 +1004,15 @@ const ccSwitchModelFields = computed<CcSwitchModelField[]>(() => {
     return [
       {
         key: 'haiku',
-        label: 'Haiku 模型 ID',
+        get label() { return t('ui.haikuModelId') },
       },
       {
         key: 'sonnet',
-        label: 'Sonnet 模型 ID',
+        get label() { return t('ui.sonnetModelId') },
       },
       {
         key: 'opus',
-        label: 'Opus 模型 ID',
+        get label() { return t('ui.opusModelId') },
       },
     ]
   }
@@ -1020,7 +1020,7 @@ const ccSwitchModelFields = computed<CcSwitchModelField[]>(() => {
   return [
     {
       key: 'default',
-      label: '默认模型 ID',
+      get label() { return t('ui.defaultModelId') },
     },
   ]
 })
@@ -1048,11 +1048,11 @@ async function loadApiKeys() {
     log.error('加载 API 密钥失败:', error)
     const status = getErrorStatus(error)
     if (status === undefined) {
-      showError('无法连接到服务器，请检查后端服务是否运行')
+      showError(t('ui.unableToConnectToTheServerCheckThatTheBackend'))
     } else if (status === 401) {
-      showError('认证失败，请重新登录')
+      showError(t('ui.authenticationFailedSignInAgain'))
     } else {
-      showError(parseApiError(error, '加载 API 密钥失败'))
+      showError(parseApiError(error, t('ui.failedToLoadApiKeys')))
     }
   } finally {
     loading.value = false
@@ -1228,7 +1228,7 @@ async function prepareCcSwitchDialog() {
     applyRecommendedCcSwitchModelIds(ccSwitchTargetApp.value)
   } catch (error) {
     log.error('加载 CC Switch 导入配置失败:', error)
-    showError(parseApiError(error, '加载 CC Switch 导入配置失败'))
+    showError(parseApiError(error, t('ui.failedToLoadCcSwitchImportSettings')))
   } finally {
     ccSwitchPreparing.value = false
   }
@@ -1269,7 +1269,7 @@ async function confirmCcSwitchImport() {
   if (!selectedCcSwitchApiKey.value) return
 
   if (!ccSwitchHasModelOptions.value) {
-    showError('暂无可用模型，请联系管理员配置可用模型后再导入')
+    showError(t('ui.noModelsAvailableAskAnAdministratorToConfigureModelsBeforeb336abe'))
     return
   }
 
@@ -1295,19 +1295,19 @@ async function confirmCcSwitchImport() {
     })
 
     if (importUrl.length > 8000) {
-      showError('CC Switch 导入链接过长，请减少模型配置后重试')
+      showError(t('ui.theCcSwitchImportUrlIsTooLongSelectFewer'))
       return
     }
 
     window.location.href = importUrl
-    success('如果浏览器询问是否打开 CC Switch，请选择允许')
+    success(t('ui.allowYourBrowserToOpenCcSwitchWhenPrompted'))
     showCcSwitchDialog.value = false
   } catch (error) {
     log.error('生成 CC Switch 导入链接失败:', error)
-    const message = parseApiError(error, '生成 CC Switch 导入链接失败')
+    const message = parseApiError(error, t('ui.failedToGenerateCcSwitchImportUrl'))
     showError(
       isMissingFullApiKeyError(message)
-        ? '该密钥缺少完整密钥信息，请重新创建 API Key'
+        ? t('ui.theFullKeyIsUnavailableCreateANewApiKey')
         : message,
     )
   } finally {
@@ -1345,7 +1345,7 @@ function closeApiKeyDialog() {
 
 async function saveApiKey() {
   if (!newKeyName.value.trim()) {
-    showError('请输入密钥名称')
+    showError(t('ui.enterAKeyName'))
     return
   }
   const routingGroupId = newKeyRoutingGroup.value === DEFAULT_ROUTING_GROUP ? null : newKeyRoutingGroup.value
@@ -1375,7 +1375,7 @@ async function saveApiKey() {
             })
           : null,
       })
-      success('API 密钥更新成功')
+      success(t('ui.apiKeyUpdated'))
     } else {
       const newKey = await meApi.createApiKey({
         name: newKeyName.value,
@@ -1398,13 +1398,13 @@ async function saveApiKey() {
         pendingFirstInstallApiKey.value = newKey
       }
       showKeyDialog.value = true
-      success('API 密钥创建成功')
+      success(t('ui.apiKeyCreated'))
     }
     closeApiKeyDialog()
     await loadApiKeys()
   } catch (error) {
     log.error(editingApiKey.value ? '更新 API 密钥失败:' : '创建 API 密钥失败:', error)
-    showError(editingApiKey.value ? '更新 API 密钥失败' : '创建 API 密钥失败')
+    showError(editingApiKey.value ? t('ui.failedToUpdateApiKey') : t('ui.failedToCreateApiKey'))
   } finally {
     creating.value = false
   }
@@ -1423,10 +1423,10 @@ async function deleteApiKey() {
     await meApi.deleteApiKey(keyToDelete.value.id)
     apiKeys.value = apiKeys.value.filter(k => k.id !== keyToDelete.value?.id)
     showDeleteDialog.value = false
-    success('API 密钥已删除')
+    success(t('ui.apiKeyDeleted'))
   } catch (error) {
     log.error('删除 API 密钥失败:', error)
-    showError('删除 API 密钥失败')
+    showError(t('ui.failedToDeleteApiKey'))
   } finally {
     deleting.value = false
     keyToDelete.value = null
@@ -1440,10 +1440,10 @@ async function toggleApiKey(apiKey: ApiKey) {
     if (index !== -1) {
       apiKeys.value[index].is_active = updated.is_active
     }
-    success(updated.is_active ? '密钥已启用' : '密钥已禁用')
+    success(updated.is_active ? t('ui.keyEnabled') : t('ui.keyDisabled'))
   } catch (error) {
     log.error('切换密钥状态失败:', error)
-    showError('操作失败')
+    showError(t('ui.operationFailed'))
   }
 }
 
@@ -1453,17 +1453,17 @@ async function copyApiKey(apiKey: ApiKey) {
     const response = await meApi.getFullApiKey(apiKey.id)
     const copied = await copyToClipboard(response.key, false) // 不显示内部提示
     if (copied) {
-      success('完整密钥已复制到剪贴板')
+      success(t('ui.fullKeyCopiedToClipboard'))
     }
   } catch (error) {
     log.error('复制密钥失败:', error)
-    showError('复制失败，请重试')
+    showError(t('ui.copyFailedPleaseTryAgain'))
   }
 }
 
 function formatConcurrentLimitSimple(concurrentLimit?: number | null): string {
   if (concurrentLimit == null || concurrentLimit === 0) {
-    return '不限并发'
+    return t('ui.unlimitedConcurrency')
   }
   return `${concurrentLimit} 并发`
 }

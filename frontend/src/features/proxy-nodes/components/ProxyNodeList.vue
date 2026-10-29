@@ -5,13 +5,13 @@
         <TableRow class="border-b border-border/60 hover:bg-transparent">
           <TableHead class="w-[28px] min-w-[28px] max-w-[28px] h-12 p-0 pl-2" />
           <TableHead class="w-[150px] h-12 font-semibold">
-            {{ legacyT('名称') }}
+            {{ t('stats.column.name') }}
           </TableHead>
           <TableHead class="w-[190px] h-12 font-semibold">
-            {{ legacyT('地址') }}
+            {{ t('ui.address') }}
           </TableHead>
           <TableHead class="w-[90px] h-12 font-semibold">
-            {{ legacyT('区域') }}
+            {{ t('ui.region') }}
           </TableHead>
           <SortableTableHead
             class="w-[90px] h-12 font-semibold text-center"
@@ -19,36 +19,36 @@
             :sortable="false"
             align="center"
             :filter-active="filterStatus !== 'all'"
-            :filter-title="legacyT('筛选状态')"
+            :filter-title="t('ui.filterStatus')"
             filter-content-class="w-36 p-1 rounded-2xl border-border bg-card text-foreground shadow-2xl backdrop-blur-xl"
           >
-            {{ legacyT('状态') }}
+            {{ t('ui.status6320b4a') }}
             <template #filter="{ close }">
               <TableFilterMenu
                 :model-value="filterStatus"
-                :options="statusOptions.map((option) => ({ ...option, label: legacyT(option.label) }))"
+                :options="statusOptions"
                 @update:model-value="(value) => $emit('update:filterStatus', value)"
                 @select="close"
               />
             </template>
           </SortableTableHead>
           <TableHead class="w-[86px] h-12 font-semibold text-center">
-            {{ legacyT('总请求') }}
+            {{ t('ui.totalRequests') }}
           </TableHead>
           <TableHead class="w-[86px] h-12 font-semibold text-center">
-            {{ legacyT('失败率') }}
+            {{ t('ui.failureRate') }}
           </TableHead>
           <TableHead class="w-[86px] h-12 font-semibold text-center">
-            {{ legacyT('延迟') }}
+            {{ t('ui.latency') }}
           </TableHead>
           <TableHead class="w-[90px] h-12 font-semibold text-center">
-            {{ legacyT('版本') }}
+            {{ t('ui.version') }}
           </TableHead>
           <TableHead class="w-[130px] h-12 font-semibold">
-            {{ legacyT('最后心跳') }}
+            {{ t('ui.lastHeartbeat') }}
           </TableHead>
           <TableHead class="w-[120px] h-12 font-semibold text-center">
-            {{ legacyT('操作') }}
+            {{ t('ui.actionsed31fbb') }}
           </TableHead>
         </TableRow>
       </TableHeader>
@@ -65,7 +65,7 @@
               <button
                 type="button"
                 class="inline-flex h-5 w-5 items-center justify-center rounded-md text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
-                :title="expandedNodeIds.has(node.id) ? legacyT('收起数据') : legacyT('展开数据')"
+                :title="expandedNodeIds.has(node.id) ? t('ui.collapseData') : t('ui.expandData')"
                 @click="$emit('toggle-details', node)"
               >
                 <ChevronDown
@@ -89,7 +89,7 @@
                   variant="outline"
                   class="text-[10px] px-1.5 py-0"
                 >
-                  {{ legacyT('手动') }}
+                  {{ t('ui.manual') }}
                 </Badge>
                 <Badge
                   v-if="node.tunnel_mode"
@@ -103,7 +103,7 @@
                   :variant="proxyNodeSchedulingBadge(node)?.variant"
                   class="text-[10px] px-1.5 py-0"
                 >
-                  {{ legacyT(proxyNodeSchedulingBadge(node)?.label || '') }}
+                  {{ (proxyNodeSchedulingBadge(node)?.label || "") }}
                 </Badge>
                 <HardwareTooltip :node="node" />
               </div>
@@ -117,16 +117,16 @@
             <TableCell class="py-4 min-w-0">
               <span
                 class="block min-w-0 truncate text-sm text-muted-foreground"
-                :title="legacyT(formatProxyNodeRegion(node.region))"
-              >{{ legacyT(formatProxyNodeRegion(node.region)) }}</span>
+                :title="formatProxyNodeRegion(node.region)"
+              >{{ formatProxyNodeRegion(node.region) }}</span>
             </TableCell>
             <TableCell class="py-4 text-center">
               <Badge
                 :variant="proxyNodeStatusVariant(node.status)"
-                :title="legacyT(proxyNodeStatusTitle(node))"
+                :title="proxyNodeStatusTitle(node)"
                 class="font-medium px-2.5 py-0.5 text-xs"
               >
-                {{ legacyT(proxyNodeStatusLabel(node)) }}
+                {{ proxyNodeStatusLabel(node) }}
               </Badge>
             </TableCell>
             <TableCell class="py-4 text-center">
@@ -153,7 +153,7 @@
                   variant="ghost"
                   size="icon"
                   class="h-8 w-8"
-                  :title="testingNodeIds.has(node.id) ? legacyT('测试中...') : legacyT('测试连通性')"
+                  :title="testingNodeIds.has(node.id) ? t('ui.testing7b6187c') : t('ui.testConnectivity')"
                   :disabled="testingNodeIds.has(node.id)"
                   @click="$emit('test', node)"
                 >
@@ -171,7 +171,7 @@
                   variant="ghost"
                   size="icon"
                   class="h-8 w-8"
-                  :title="legacyT('编辑')"
+                  :title="t('ui.edit0518365')"
                   @click="$emit('edit', node)"
                 >
                   <SquarePen class="h-4 w-4" />
@@ -181,7 +181,7 @@
                   variant="ghost"
                   size="icon"
                   class="h-8 w-8"
-                  :title="legacyT('远程配置')"
+                  :title="t('ui.remoteConfig')"
                   @click="$emit('config', node)"
                 >
                   <Settings class="h-4 w-4" />
@@ -191,7 +191,7 @@
                   variant="ghost"
                   size="icon"
                   class="h-8 w-8"
-                  :title="legacyT('连接事件')"
+                  :title="t('ui.connectionEvents')"
                   @click="$emit('view-events', node)"
                 >
                   <History class="h-4 w-4" />
@@ -200,7 +200,7 @@
                   variant="ghost"
                   size="icon"
                   class="h-8 w-8"
-                  :title="legacyT('删除')"
+                  :title="t('ui.delete')"
                   @click="$emit('delete', node)"
                 >
                   <Trash2 class="h-4 w-4" />
@@ -229,7 +229,7 @@
             colspan="11"
             class="py-12 text-center text-muted-foreground text-sm"
           >
-            {{ loading ? legacyT('加载中...') : legacyT('暂无代理节点') }}
+            {{ loading ? t('common.loading') : t('ui.noProxyNodes') }}
           </TableCell>
         </TableRow>
       </TableBody>
@@ -255,7 +255,7 @@
       v-if="nodes.length === 0"
       class="p-8 text-center text-muted-foreground text-sm"
     >
-      {{ loading ? legacyT('加载中...') : legacyT('暂无代理节点') }}
+      {{ loading ? t('common.loading') : t('ui.noProxyNodes') }}
     </div>
   </div>
 
@@ -318,5 +318,5 @@ defineEmits<{
   delete: [node: ProxyNode]
 }>()
 
-const { legacyT, locale } = useI18n()
+const { t, locale } = useI18n()
 </script>

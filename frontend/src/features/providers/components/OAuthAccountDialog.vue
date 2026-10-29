@@ -1,7 +1,7 @@
 <template>
   <Dialog
     :model-value="isOpen"
-    :title="legacyT('添加账号')"
+    :title="t('ui.addAccount')"
     :icon="UserPlus"
     size="md"
     @update:model-value="handleDialogUpdate"
@@ -18,7 +18,7 @@
             :class="selectedProxyNodeId
               ? 'text-blue-500 bg-blue-500/10 hover:bg-blue-500/20'
               : 'text-muted-foreground hover:text-foreground hover:bg-muted'"
-            :title="selectedProxyNodeId ? `${legacyT('代理')}: ${getSelectedNodeLabel()}` : legacyT('设置代理节点')"
+            :title="selectedProxyNodeId ? `${t('ui.proxy')}: ${getSelectedNodeLabel()}` : t('ui.setProxyNode')"
           >
             <Globe class="w-4 h-4" />
           </button>
@@ -31,18 +31,18 @@
           <div class="space-y-2">
             <div class="flex items-center justify-between">
               <div class="flex items-center gap-1.5">
-                <span class="text-xs font-medium">{{ legacyT('代理节点') }}</span>
+                <span class="text-xs font-medium">{{ t('ui.proxyNodes23f1b6a') }}</span>
                 <span
                   v-if="!proxyNodesStore.loading && proxyNodesStore.onlineNodes.length === 0"
                   class="text-[10px] text-muted-foreground"
-                >· {{ legacyT('前往「模块管理 · 代理节点」添加') }}</span>
+                >· {{ t('ui.goToModulesProxyNodesToAddOne') }}</span>
               </div>
               <button
                 v-if="selectedProxyNodeId"
                 class="text-[10px] text-muted-foreground hover:text-foreground transition-colors"
                 @click="selectedProxyNodeId = ''; proxyPopoverOpen = false"
               >
-                {{ legacyT('清除') }}
+                {{ t('ui.clear') }}
               </button>
             </div>
             <ProxyNodeSelect
@@ -51,7 +51,7 @@
               @update:model-value="(v: string) => { selectedProxyNodeId = v; proxyPopoverOpen = false }"
             />
             <p class="text-[10px] text-muted-foreground">
-              {{ selectedProxyNodeId ? proxyUsageDescription : legacyT('未设置，依次回退到提供商代理 → 系统代理') }}
+              {{ selectedProxyNodeId ? proxyUsageDescription : t('ui.notSetFallsBackToProviderProxyThenSystemProxy') }}
             </p>
           </div>
         </PopoverContent>
@@ -86,7 +86,7 @@
           :disabled="importing || creatingAgentIdentity || cookieAuthorizing"
           @click="switchMode('cookie')"
         >
-          {{ legacyT('Cookie授权') }}
+          {{ t('ui.cookieAuthorization') }}
         </button>
         <button
           class="min-w-0 min-h-8 px-2 py-1.5 text-xs font-medium leading-4 rounded-md transition-all disabled:cursor-not-allowed disabled:opacity-60"
@@ -107,7 +107,7 @@
           :disabled="importing || creatingAgentIdentity || cookieAuthorizing"
           @click="switchMode('agent_identity')"
         >
-          {{ legacyT('Agent Identity') }}
+          {{ "Agent Identity" }}
         </button>
       </div>
 
@@ -145,7 +145,7 @@
               <div class="text-center">
                 <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-primary mx-auto mb-3" />
                 <p class="text-xs text-muted-foreground">
-                  {{ legacyT('正在准备授权...') }}
+                  {{ t('ui.preparingAuthorization') }}
                 </p>
               </div>
             </div>
@@ -157,7 +157,7 @@
               <div class="shrink-0 space-y-2">
                 <div class="flex items-center gap-2">
                   <span class="flex items-center justify-center w-4 h-4 rounded-full bg-primary/10 text-primary text-[10px] font-semibold shrink-0">1</span>
-                  <span class="text-xs font-medium">{{ legacyT('前往授权') }}</span>
+                  <span class="text-xs font-medium">{{ t('ui.goToAuthorization') }}</span>
                 </div>
                 <div class="flex gap-2 pl-6">
                   <Button
@@ -166,7 +166,7 @@
                     @click="openAuthorizationUrl"
                   >
                     <ExternalLink class="w-3 h-3 mr-1" />
-                    {{ legacyT('打开') }}
+                    {{ t('ui.openc771248') }}
                   </Button>
                   <Button
                     size="sm"
@@ -175,7 +175,7 @@
                     @click="copyToClipboard(oauth.authorization_url)"
                   >
                     <Copy class="w-3 h-3 mr-1" />
-                    {{ legacyT('复制') }}
+                    {{ t('common.copy') }}
                   </Button>
                 </div>
               </div>
@@ -212,14 +212,14 @@
             class="sr-only"
             for="claude-session-cookie"
           >
-            {{ legacyT('Claude sessionKey Cookie') }}
+            {{ "Claude sessionKey Cookie" }}
           </label>
           <div class="relative">
             <Textarea
               id="claude-session-cookie"
               v-model="cookieInput"
               :disabled="cookieAuthorizing"
-              :placeholder="legacyT('每行粘贴一个 sessionKey Cookie 值或完整 Cookie 请求头，最多 20 个')"
+              :placeholder="t('ui.pasteOneSessionkeyCookieValueOrCompleteCookieHeaderPer')"
               aria-describedby="claude-session-cookie-status"
               class="h-[200px] min-h-[200px] overflow-y-auto pb-7 text-xs font-mono break-words !rounded-xl"
               data-testid="claude-cookie-input"
@@ -261,7 +261,7 @@
               :disabled="importing"
               @click="setWindsurfImportMethod(method.key)"
             >
-              {{ legacyT(method.label) }}
+              {{ method.label }}
             </button>
           </div>
 
@@ -270,7 +270,7 @@
             class="space-y-3"
           >
             <div class="space-y-1.5">
-              <label class="text-xs font-medium">{{ legacyT('邮箱') }}</label>
+              <label class="text-xs font-medium">{{ t('auth.register.email') }}</label>
               <input
                 v-model="windsurfEmail"
                 type="email"
@@ -282,24 +282,24 @@
               >
             </div>
             <div class="space-y-1.5">
-              <label class="text-xs font-medium">{{ legacyT('密码') }}</label>
+              <label class="text-xs font-medium">{{ t('auth.register.password') }}</label>
               <input
                 v-model="windsurfPassword"
                 type="password"
                 autocomplete="current-password"
                 :disabled="importing"
-                :placeholder="legacyT('Windsurf 密码')"
+                :placeholder="t('ui.windsurfPassword')"
                 class="w-full h-9 px-2.5 text-xs rounded-md border border-border bg-background focus:outline-none focus:ring-1 focus:ring-ring focus:relative focus:z-10"
               >
             </div>
             <div class="space-y-1.5">
-              <label class="text-xs font-medium text-muted-foreground">{{ legacyT('名称（可选）') }}</label>
+              <label class="text-xs font-medium text-muted-foreground">{{ t('ui.nameOptional') }}</label>
               <input
                 v-model="windsurfAccountName"
                 type="text"
                 autocomplete="off"
                 :disabled="importing"
-                :placeholder="legacyT('未填写时使用邮箱')"
+                :placeholder="t('ui.usesEmailIfLeftEmpty')"
                 class="w-full h-9 px-2.5 text-xs rounded-md border border-border bg-background focus:outline-none focus:ring-1 focus:ring-ring focus:relative focus:z-10"
                 spellcheck="false"
               >
@@ -355,7 +355,7 @@
               class="space-y-1"
             >
               <p class="text-[11px] text-destructive">
-                {{ legacyT('最近错误') }}
+                {{ t('ui.recentErrors') }}
               </p>
               <p
                 v-for="item in importTask.error_samples.slice(0, 3)"
@@ -379,7 +379,7 @@
           <Textarea
             v-model="agentIdentityInput"
             :disabled="creatingAgentIdentity"
-            :placeholder="legacyT('粘贴 AT 或 ChatGPT auth/session JSON')"
+            :placeholder="t('ui.pasteAnAccessTokenOrChatgptAuthSessionJson')"
             class="min-h-[200px] text-xs font-mono break-all !rounded-xl"
             autocomplete="off"
             spellcheck="false"
@@ -393,21 +393,21 @@
         variant="outline"
         @click="handleClose"
       >
-        {{ legacyT('取消') }}
+        {{ t('common.cancel') }}
       </Button>
       <Button
         v-if="mode === 'oauth' && showAuthorizationMode && !isDeviceBrowserProvider"
         :disabled="!canCompleteOAuth"
         @click="handleCompleteOAuth"
       >
-        {{ oauth.completing ? legacyT('验证中...') : legacyT('验证') }}
+        {{ oauth.completing ? t('auth.register.verifying') : t('ui.verify') }}
       </Button>
       <Button
         v-if="mode === 'oauth' && isManualDeviceCallbackMode"
         :disabled="!canCompleteDeviceAuth"
         @click="completeDeviceAuth"
       >
-        {{ device.completing ? legacyT('验证中...') : legacyT('验证') }}
+        {{ device.completing ? t('auth.register.verifying') : t('ui.verify') }}
       </Button>
       <Button
         v-if="mode === 'cookie' && isClaudeCodeProvider"
@@ -428,7 +428,7 @@
         :disabled="!canCreateAgentIdentity"
         @click="handleCreateAgentIdentity"
       >
-        {{ creatingAgentIdentity ? legacyT('创建中...') : legacyT('创建') }}
+        {{ creatingAgentIdentity ? t('ui.creating') : t('ui.create') }}
       </Button>
     </template>
   </Dialog>
@@ -494,9 +494,11 @@ const emit = defineEmits<{
   saved: []
 }>()
 
+const { t, locale } = useI18n()
+
 const { success, warning, error: showError } = useToast()
 const { copyToClipboard } = useClipboard()
-const { legacyT, locale } = useI18n()
+
 const proxyNodesStore = useProxyNodesStore()
 const totp = useTotp()
 
@@ -516,7 +518,7 @@ function isEnglishLocale(): boolean {
 }
 
 function localizedApiError(error: unknown, fallback: string): string {
-  return legacyT(parseApiError(error, fallback))
+  return parseApiError(error, fallback)
 }
 
 // 模式
@@ -621,18 +623,18 @@ const isManualDeviceCallbackPending = computed(() =>
 )
 
 const authorizationModeLabel = computed(() => {
-  if (isWindsurfProvider.value) return legacyT('浏览器登录')
-  if (isXaiProvider.value || isDeviceBrowserProvider.value) return legacyT('设备授权')
-  return legacyT('获取授权')
+  if (isWindsurfProvider.value) return t('ui.browserSignIn')
+  if (isXaiProvider.value || isDeviceBrowserProvider.value) return t('ui.deviceAuthorization')
+  return t('ui.authorize530a149')
 })
 
 const oauthCallbackLabel = computed(() =>
-  legacyT(isClaudeCodeProvider.value ? '粘贴回调 URL 或授权码' : '粘贴回调 URL')
+  isClaudeCodeProvider.value ? t('ui.pasteCallbackUrlOrAuthorizationCode') : t('ui.pasteCallbackUrl')
 )
 
 const oauthCallbackPlaceholder = computed(() =>
   isClaudeCodeProvider.value
-    ? legacyT('粘贴完整回调 URL 或授权码（code#state）')
+    ? t('ui.pasteTheFullCallbackUrlOrAuthorizationCodeCodeState')
     : 'http://localhost:xxx/callback?code=...'
 )
 
@@ -674,20 +676,17 @@ const canAuthorizeWithCookie = computed(() =>
   && !cookieAuthorizing.value
 )
 const cookieAuthorizeButtonText = computed(() => {
-  if (cookieAuthorizing.value) return legacyT('授权中...')
-  return cookieEntries.value.length > 1 ? legacyT('批量授权') : legacyT('授权')
+  if (cookieAuthorizing.value) return t('ui.authorizing')
+  return cookieEntries.value.length > 1 ? t('ui.batchAuthorize') : t('ui.authorization')
 })
 const cookieInputStatusText = computed(() => {
   const task = cookieAuthorizeTask.value
   if (cookieAuthorizing.value && task) {
-    return isEnglishLocale()
-      ? `${task.processed}/${task.total} · ${task.success} succeeded · ${task.failed} failed`
-      : `进度 ${task.processed}/${task.total} · 成功 ${task.success} · 失败 ${task.failed}`
+    return t('providers.migration.progressSucceededFailed5fe992', { value: String(task.processed), value_2: String(task.total), value_3: String(task.success), value_4: String(task.failed) })
   }
   const count = cookieEntries.value.length
-  if (count === 0) return legacyT('每行一个，最多 20 个')
-  if (isEnglishLocale()) return `${count} entered, maximum ${CLAUDE_COOKIE_BATCH_LIMIT}`
-  return `已输入 ${count} 个，最多 ${CLAUDE_COOKIE_BATCH_LIMIT} 个`
+  if (count === 0) return t('ui.onePerLineUpTo20')
+  return t('providers.migration.enteredMaximum6e8e7a', { value: String(count), value_2: String(CLAUDE_COOKIE_BATCH_LIMIT) })
 })
 
 const canCreateAgentIdentity = computed(() =>
@@ -696,49 +695,44 @@ const canCreateAgentIdentity = computed(() =>
   && !creatingAgentIdentity.value
 )
 
-const importModeLabel = computed(() => legacyT(isGrokProvider.value ? '导入账号' : '导入授权'))
-const importButtonLabel = computed(() => legacyT(isGrokProvider.value ? '导入账号' : '导入'))
+const importModeLabel = computed(() => isGrokProvider.value ? t('ui.importAccounts') : t('ui.importAuthorization'))
+const importButtonLabel = computed(() => isGrokProvider.value ? t('ui.importAccounts') : t('ui.import'))
 const importDropTitle = computed(() => (
-  legacyT(isGrokProvider.value ? '拖入 Grok 账号文件或点击选择' : '拖入授权文件或点击选择')
+  isGrokProvider.value ? t('ui.dropAGrokAccountFileOrClickToChoose') : t('ui.dropAnAuthorizationFileOrClickToChoose')
 ))
 const importDropHint = computed(() => (
-  legacyT(isGrokProvider.value ? '支持 .json / .txt，可多选、批量导入' : '支持 .json / .txt，可多选')
+  isGrokProvider.value ? t('ui.supportsJsonTxtMultipleSelectionAndBatchImport') : t('ui.supportsJsonTxtAndMultipleSelection')
 ))
 const importManualPlaceholder = computed(() => {
   if (isGrokProvider.value) {
-    return legacyT('粘贴 Grok sso/session token，支持每行一个；或粘贴包含 token、sso_token、access_token、plan_type、pool_tier 的 JSON')
+    return t('ui.pasteGrokSsoSessionTokensOnePerLineOrPaste')
   }
   if (isClaudeCodeProvider.value) {
-    return legacyT('粘贴 Claude Refresh Token 或 Claude Code .credentials.json 内容')
+    return t('ui.pasteAClaudeRefreshTokenOrClaudeCodeCredentialsJson')
   }
   if (isXaiProvider.value) {
-    return legacyT('粘贴 xAI API Key、Access Token，或包含 refresh_token / api_key 的 JSON')
+    return t('ui.pasteAnXaiApiKeyAccessTokenOrJsonContaining')
   }
   if (isWindsurfProvider.value) {
-    return legacyT('粘贴 show-auth-token Token、API key 或 JSON 内容')
+    return t('ui.pasteAShowAuthTokenTokenApiKeyOrJson')
   }
-  return legacyT('粘贴 Refresh Token / Access Token / Agent Identity JSON 内容')
+  return t('ui.pasteARefreshTokenAccessTokenOrAgentIdentityJson')
 })
 const importManualDescription = computed(() => (
   isGrokProvider.value
-    ? legacyT('plan_type / pool_tier 会作为账号套餐与能力特征保存，不是路由池选择。')
+    ? t('ui.planTypePoolTierAreSavedAsAccountPlanAnd')
     : ''
 ))
 const importPasteToggleText = computed(() => (
-  legacyT(isGrokProvider.value ? '或手动粘贴 Grok Token' : '或手动粘贴 Token')
+  isGrokProvider.value ? t('ui.orManuallyPasteAGrokToken') : t('ui.orManuallyPasteAToken')
 ))
 const importFileToggleText = computed(() => (
-  legacyT(isGrokProvider.value ? '或选择 Grok Token 文件导入' : '或选择 JSON 文件导入')
+  isGrokProvider.value ? t('ui.orChooseAGrokTokenFileToImport') : t('ui.orChooseAJsonFileToImport')
 ))
 const proxyUsageDescription = computed(() => {
-  if (isEnglishLocale()) {
-    return isGrokProvider.value
-      ? 'Import, refresh, and quota queries use this proxy'
-      : 'Authorization, refresh, and quota queries use this proxy'
-  }
   return isGrokProvider.value
-    ? '导入、刷新、额度查询均走此代理'
-    : '授权、刷新、额度查询均走此代理'
+    ? t('ui.importRefreshAndQuotaQueriesUseThisProxy')
+    : t('ui.authorizationRefreshAndQuotaQueriesUseThisProxy')
 })
 const isWindsurfEmailPasswordImport = computed(() =>
   isWindsurfProvider.value && windsurfImportMethod.value === 'email_password'
@@ -746,33 +740,29 @@ const isWindsurfEmailPasswordImport = computed(() =>
 const importButtonText = computed(() => {
   if (importing.value) {
     return importTask.value && !isWindsurfEmailPasswordImport.value
-      ? (isEnglishLocale() ? `Importing ${importTask.value.progress_percent}%` : `导入中 ${importTask.value.progress_percent}%`)
-      : legacyT('导入中...')
+      ? (t('providers.migration.importing91b33f', { value: String(importTask.value.progress_percent) }))
+      : t('ui.importingc70b341')
   }
-  return isWindsurfEmailPasswordImport.value ? legacyT('登录并导入') : importButtonLabel.value
+  return isWindsurfEmailPasswordImport.value ? t('ui.signInAndImport') : importButtonLabel.value
 })
 
 const importTaskMessageText = computed(() => {
   const message = importTask.value?.message?.trim()
   if (!message) return ''
   // 后端进度 message 已由“进度 x/y”展示，避免在导入中重复显示“处理中 x/y”。
-  return redundantImportTaskMessagePattern.test(message) ? '' : legacyT(message)
+  return redundantImportTaskMessagePattern.test(message) ? '' : message
 })
 
 function importProgressText(task: OAuthBatchImportTaskStatusResponse): string {
-  return isEnglishLocale()
-    ? `Progress ${task.processed}/${task.total}`
-    : `进度 ${task.processed}/${task.total}`
+  return t('providers.migration.progress9b408a', { value: String(task.processed), value_2: String(task.total) })
 }
 
 function importResultSummaryText(task: OAuthBatchImportTaskStatusResponse): string {
-  return isEnglishLocale()
-    ? `Success ${task.success} · Failed ${task.failed}`
-    : `成功 ${task.success} · 失败 ${task.failed}`
+  return t('providers.migration.succeededFailed89649e', { value: String(task.success), value_2: String(task.failed) })
 }
 
 function importErrorSampleText(item: OAuthBatchImportTaskStatusResponse['error_samples'][number]): string {
-  return `#${item.index + 1} ${legacyT(item.error || '导入失败')}`
+  return `#${item.index + 1} ${(item.error || t('ui.importFailed'))}`
 }
 
 function stopImportPolling() {
@@ -786,45 +776,35 @@ function stopImportPolling() {
 function getImportTaskStatusText(status: OAuthBatchImportTaskStatus): string {
   switch (status) {
     case 'submitted':
-      return legacyT('任务已提交')
+      return t('ui.taskSubmitted')
     case 'processing':
-      return legacyT('正在导入')
+      return t('ui.importing5c27a92')
     case 'completed':
-      return legacyT('导入完成')
+      return t('ui.importCompleted613fef')
     case 'failed':
-      return legacyT('导入失败')
+      return t('ui.importFailed')
     default:
-      return legacyT('处理中')
+      return t('ui.processing694b71b')
   }
 }
 
 function getOAuthSuccessMessage(
-  action: '授权' | '导入' | '创建',
+  action: 'authorize' | 'import' | 'create',
   options?: { email?: string | null; replaced?: boolean }
 ): string {
   const email = typeof options?.email === 'string' ? options.email.trim() : ''
   const replaced = options?.replaced === true
-  const actionText = legacyT(action)
-
-  if (isEnglishLocale()) {
-    if (email) {
-      return replaced
-        ? `${actionText} succeeded: ${email} (replaced existing account)`
-        : `${actionText} succeeded: ${email}`
-    }
-    return replaced
-      ? `${actionText} succeeded; replaced existing account`
-      : `${actionText} succeeded; account added`
-  }
+  const actionKeys = { authorize: 'ui.authorization', import: 'ui.import', create: 'ui.create' } as const
+  const actionText = t(actionKeys[action])
 
   if (email) {
     return replaced
-      ? `${action}成功: ${email}（已替换旧账号）`
-      : `${action}成功: ${email}`
+      ? t('providers.migration.succeededReplacedExistingAccountf3b50a', { value: actionText, value_2: String(email) })
+      : t('providers.migration.succeeded274d3e', { value: actionText, value_2: String(email) })
   }
   return replaced
-    ? `${action}成功，已替换旧账号`
-    : `${action}成功，账号已添加`
+    ? t('providers.migration.succeededReplacedExistingAccountb1af2b', { value: actionText })
+    : t('providers.migration.succeededAccountAddeddaec8b', { value: actionText })
 }
 
 function getBatchImportSuccessMessage(task: OAuthBatchImportTaskStatusResponse): string {
@@ -833,33 +813,28 @@ function getBatchImportSuccessMessage(task: OAuthBatchImportTaskStatusResponse):
   const parts: string[] = []
 
   if (createdCount > 0) {
-    parts.push(isEnglishLocale() ? `${createdCount} added` : `新增 ${createdCount} 个`)
+    parts.push(t('providers.migration.addedc4018b', { value: String(createdCount) }))
   }
   if (replacedCount > 0) {
-    parts.push(isEnglishLocale() ? `${replacedCount} replaced` : `替换 ${replacedCount} 个`)
+    parts.push(t('providers.migration.replaced89153e', { value: String(replacedCount) }))
   }
   if (task.failed > 0) {
-    parts.push(isEnglishLocale() ? `${task.failed} failed` : `失败 ${task.failed} 个`)
+    parts.push(t('providers.migration.failed281422', { value: String(task.failed) }))
   }
 
   if (parts.length === 0) {
-    if (isEnglishLocale()) {
-      return task.failed > 0 ? `Batch import complete: ${task.failed} failed` : 'Batch import complete'
-    }
-    return task.failed > 0 ? `批量导入完成：失败 ${task.failed} 个` : '批量导入完成'
+    return task.failed > 0 ? t('providers.migration.batchImportCompleteFailed8b59e0', { value: String(task.failed) }) : t('ui.batchImportComplete')
   }
   if (task.failed === 0 && createdCount > 0 && replacedCount === 0) {
-    if (isEnglishLocale()) return `Batch import succeeded: ${createdCount} accounts added`
-    return `批量导入成功：${createdCount} 个账号已添加`
+    return t('providers.migration.batchImportSucceededAccountsAddedc39555', { value: String(createdCount) })
   }
   if (task.failed === 0 && createdCount === 0 && replacedCount > 0) {
-    if (isEnglishLocale()) return `Batch import succeeded: ${replacedCount} existing accounts replaced`
-    return `批量导入成功：已替换 ${replacedCount} 个旧账号`
+    return t('providers.migration.batchImportSucceededExistingAccountsd6acfc', { value: String(replacedCount) })
   }
 
   const prefix = task.failed > 0
-    ? legacyT('批量导入完成')
-    : legacyT('批量导入成功')
+    ? t('ui.batchImportComplete')
+    : t('ui.batchImportSucceeded')
   return isEnglishLocale()
     ? `${prefix}: ${parts.join(', ')}`
     : `${prefix}：${parts.join('，')}`
@@ -888,7 +863,7 @@ async function pollImportTaskStatus(taskId: string) {
         emit('saved')
         handleClose()
       } else {
-        showError(legacyT(task.error || '批量导入失败'), legacyT('导入失败'))
+        showError((task.error || t('ui.batchImportFailed')), t('ui.importFailed'))
       }
       return
     }
@@ -896,7 +871,7 @@ async function pollImportTaskStatus(taskId: string) {
     if (task.status === 'failed') {
       stopImportPolling()
       importing.value = false
-      showError(legacyT(task.error || task.message || '批量导入失败'), legacyT('导入失败'))
+      showError(((task.error || task.message) || t('ui.batchImportFailed')), t('ui.importFailed'))
       return
     }
 
@@ -1062,7 +1037,7 @@ function openAuthorizationUrl() {
   if (!url) return
   const safeUrl = safeExternalHttpsUrl(url)
   if (!safeUrl) {
-    showError(legacyT('OAuth 服务返回了不安全的授权地址'))
+    showError(t('ui.theOauthServiceReturnedAnUnsafeAuthorizationUrl'))
     return
   }
   window.open(safeUrl, '_blank', 'noopener,noreferrer')
@@ -1085,8 +1060,8 @@ async function initOAuth() {
     oauth.value.provider_type = resp.provider_type
   } catch (err: unknown) {
     if (requestId !== oauthInitRequestId) return
-    const errorMessage = localizedApiError(err, '初始化授权失败')
-    showError(errorMessage, legacyT('错误'))
+    const errorMessage = localizedApiError(err, t('ui.failedToInitializeAuthorization'))
+    showError(errorMessage, t('ui.error'))
     mode.value = 'import'
   } finally {
     if (requestId === oauthInitRequestId) {
@@ -1106,13 +1081,13 @@ async function handleCompleteOAuth() {
       proxy_node_id: selectedProxyNodeId.value || undefined,
     })
     if (requestId !== oauthCompleteRequestId) return
-    success(getOAuthSuccessMessage('授权', result))
+    success(getOAuthSuccessMessage('authorize', result))
     emit('saved')
     handleClose()
   } catch (err: unknown) {
     if (requestId !== oauthCompleteRequestId) return
-    const errorMessage = localizedApiError(err, '完成授权失败')
-    showError(errorMessage, legacyT('错误'))
+    const errorMessage = localizedApiError(err, t('ui.failedToCompleteAuthorization'))
+    showError(errorMessage, t('ui.error'))
   } finally {
     if (requestId === oauthCompleteRequestId) {
       oauth.value.completing = false
@@ -1134,7 +1109,7 @@ async function handleCookieAuthorize() {
       })
       if (requestId !== cookieAuthorizeRequestId) return
 
-      success(getOAuthSuccessMessage('授权', result))
+      success(getOAuthSuccessMessage('authorize', result))
       emit('saved')
       handleClose()
       return
@@ -1151,8 +1126,8 @@ async function handleCookieAuthorize() {
     scheduleCookieAuthorizePoll(task.task_id, requestId, 0)
   } catch (err: unknown) {
     if (requestId !== cookieAuthorizeRequestId) return
-    const errorMessage = localizedApiError(err, 'Cookie 授权失败')
-    showError(errorMessage, legacyT('错误'))
+    const errorMessage = localizedApiError(err, t('ui.cookieAuthorizationFailed'))
+    showError(errorMessage, t('ui.error'))
   } finally {
     if (requestId === cookieAuthorizeRequestId && !cookieAuthorizeTask.value) {
       cookieAuthorizing.value = false
@@ -1178,18 +1153,11 @@ function scheduleCookieAuthorizePoll(taskId: string, requestId: number, delayMs 
 function cookieAuthorizeBatchSummary(task: OAuthBatchImportTaskStatusResponse): string {
   const replaced = Math.max(task.replaced_count ?? 0, 0)
   const created = Math.max(task.created_count ?? task.success - replaced, 0)
-  const successDetail = isEnglishLocale()
-    ? `${task.success} succeeded (${created} added, ${replaced} replaced)`
-    : `成功 ${task.success} 个（新增 ${created} 个，替换 ${replaced} 个）`
+  const successDetail = t('providers.migration.succeededAddedReplacedd6df17', { value: String(task.success), value_2: String(created), value_3: String(replaced) })
 
-  if (isEnglishLocale()) {
-    return task.failed > 0
-      ? `Batch authorization complete: ${successDetail}, ${task.failed} failed`
-      : `Batch authorization succeeded: ${successDetail}`
-  }
   return task.failed > 0
-    ? `批量授权完成：${successDetail}，失败 ${task.failed} 个`
-    : `批量授权成功：${successDetail}`
+    ? t('providers.migration.batchAuthorizationCompleteFailed5cf5e1', { value: String(successDetail), value_2: String(task.failed) })
+    : t('providers.migration.batchAuthorizationSucceededdc77ec', { value: String(successDetail) })
 }
 
 function cookieAuthorizeFailureReasons(task: OAuthBatchImportTaskStatusResponse): string[] {
@@ -1220,7 +1188,7 @@ function cookieAuthorizeFailureReasons(task: OAuthBatchImportTaskStatusResponse)
     }
 
     seenIndexes.add(index)
-    reasons.push(`#${index + 1} ${legacyT(detail)}`)
+    reasons.push(`#${index + 1} ${detail}`)
     if (reasons.length === 2) break
   }
   return reasons
@@ -1265,11 +1233,11 @@ function handleCookieAuthorizeBatchResult(
   if (task.success > 0) {
     cookieInput.value = failedCookieAuthorizeEntries(task, entries).join('\n')
     emit('saved')
-    warning(message, legacyT('批量授权'))
+    warning(message, t('ui.batchAuthorize'))
     return
   }
 
-  showError(message, legacyT('错误'))
+  showError(message, t('ui.error'))
 }
 
 async function pollCookieAuthorizeTaskStatus(taskId: string, requestId: number) {
@@ -1294,8 +1262,8 @@ async function pollCookieAuthorizeTaskStatus(taskId: string, requestId: number) 
       cookieAuthorizeTask.value = null
       cookieAuthorizeSubmittedEntries.value = []
       showError(
-        legacyT(task.error || task.message || 'Cookie 授权失败'),
-        legacyT('Cookie 授权失败'),
+        ((task.error || task.message) || t('ui.cookieAuthorizationFailed')),
+        t('ui.cookieAuthorizationFailed'),
       )
       return
     }
@@ -1313,7 +1281,7 @@ async function pollCookieAuthorizeTaskStatus(taskId: string, requestId: number) 
 }
 
 function handleImportInputError(payload: { message: string; title?: string }) {
-  showError(legacyT(payload.message), payload.title ? legacyT(payload.title) : undefined)
+  showError(payload.message, payload.title ? payload.title : undefined)
 }
 
 function setWindsurfImportMethod(method: WindsurfImportMethod) {
@@ -1328,7 +1296,7 @@ async function handleWindsurfEmailPasswordImport() {
   const email = windsurfEmail.value.trim()
   const password = windsurfPassword.value.trim()
   if (!email || !password) {
-    showError(legacyT('请输入邮箱和密码'), legacyT('格式错误'))
+    showError(t('auth.login.required'), t('ui.formatError'))
     return
   }
 
@@ -1340,12 +1308,12 @@ async function handleWindsurfEmailPasswordImport() {
       name: windsurfAccountName.value.trim() || email,
       proxy_node_id: selectedProxyNodeId.value || undefined,
     })
-    success(getOAuthSuccessMessage('导入', result))
+    success(getOAuthSuccessMessage('import', result))
     emit('saved')
     handleClose()
   } catch (err: unknown) {
-    const errorMessage = localizedApiError(err, '导入失败')
-    showError(errorMessage, legacyT('错误'))
+    const errorMessage = localizedApiError(err, t('ui.importFailed'))
+    showError(errorMessage, t('ui.error'))
   } finally {
     importing.value = false
   }
@@ -1360,13 +1328,13 @@ async function handleImport() {
 
   const inputText = importText.value.trim()
   if (!inputText) {
-    showError(legacyT('请输入凭据数据'), legacyT('格式错误'))
+    showError(t('ui.enterCredentialData'), t('ui.formatError'))
     return
   }
 
   const normalizedCredentials = normalizeBatchImportCredentials(inputText)
   if (!normalizedCredentials.ok) {
-    showError(legacyT(normalizedCredentials.message), legacyT('格式错误'))
+    showError(normalizedCredentials.message, t('ui.formatError'))
     return
   }
 
@@ -1407,20 +1375,20 @@ async function handleImport() {
       // 单条导入
       const parsed = parseImportText(normalizedCredentials.credentials, props.providerType)
       if (!parsed) {
-        showError(legacyT('无法解析输入内容，请检查格式'), legacyT('格式错误'))
+        showError(t('ui.unableToParseTheInputCheckTheFormat'), t('ui.formatError'))
         return
       }
       const result = await importProviderRefreshToken(props.providerId, {
         ...parsed,
         proxy_node_id: proxyNodeId,
       })
-      success(getOAuthSuccessMessage('导入', result))
+      success(getOAuthSuccessMessage('import', result))
       emit('saved')
       handleClose()
     }
   } catch (err: unknown) {
-    const errorMessage = localizedApiError(err, '导入失败')
-    showError(errorMessage, legacyT('错误'))
+    const errorMessage = localizedApiError(err, t('ui.importFailed'))
+    showError(errorMessage, t('ui.error'))
   } finally {
     if (!keepImporting) {
       importing.value = false
@@ -1433,7 +1401,7 @@ async function handleCreateAgentIdentity() {
 
   const resolvedInput = resolveAgentIdentityAccessToken(agentIdentityInput.value)
   if (!resolvedInput.ok) {
-    showError(legacyT(resolvedInput.message), legacyT('格式错误'))
+    showError(resolvedInput.message, t('ui.formatError'))
     return
   }
   const requestId = ++agentIdentityRequestId
@@ -1447,16 +1415,16 @@ async function handleCreateAgentIdentity() {
     if (requestId !== agentIdentityRequestId) return
 
     if (result.task_ready === false) {
-      warning(legacyT('Agent Identity 已保存，任务将在后台初始化'), legacyT('已保存'))
+      warning(t('ui.agentIdentityWasSavedItsTaskWillInitializeInThe'), t('ui.saved1bd91a7'))
     } else {
-      success(getOAuthSuccessMessage('创建', result))
+      success(getOAuthSuccessMessage('create', result))
     }
     emit('saved')
     handleClose()
   } catch (err: unknown) {
     if (requestId !== agentIdentityRequestId) return
-    const errorMessage = localizedApiError(err, '创建 Agent Identity 失败')
-    showError(errorMessage, legacyT('错误'))
+    const errorMessage = localizedApiError(err, t('ui.failedToCreateAgentIdentity'))
+    showError(errorMessage, t('ui.error'))
   } finally {
     if (requestId === agentIdentityRequestId) {
       creatingAgentIdentity.value = false
@@ -1471,7 +1439,7 @@ function openDeviceVerificationUrl() {
   if (!url) return
   const safeUrl = safeExternalHttpsUrl(url)
   if (!safeUrl) {
-    showError(legacyT('OAuth 服务返回了不安全的设备验证地址'))
+    showError(t('ui.theOauthServiceReturnedAnUnsafeDeviceVerificationUrl'))
     return
   }
   window.open(safeUrl, '_blank', 'noopener,noreferrer')
@@ -1540,8 +1508,8 @@ async function startDeviceAuth() {
     }
   } catch (err: unknown) {
     if (requestId !== deviceAuthRequestId || device.value.auth_type !== requestedAuthType) return
-    const errorMessage = localizedApiError(err, '发起设备授权失败')
-    showError(errorMessage, legacyT('错误'))
+    const errorMessage = localizedApiError(err, t('ui.failedToStartDeviceAuthorization'))
+    showError(errorMessage, t('ui.error'))
     device.value.status = 'error'
     device.value.error = errorMessage
   } finally {
@@ -1620,7 +1588,7 @@ async function pollDevice(withCallback = false) {
         stopDevicePolling()
         totp.stop()
         device.value.status = 'authorized'
-        success(getOAuthSuccessMessage('授权', result))
+        success(getOAuthSuccessMessage('authorize', result))
         emit('saved')
         handleClose()
         return
@@ -1636,18 +1604,18 @@ async function pollDevice(withCallback = false) {
       case 'expired':
         stopDevicePolling()
         device.value.status = 'expired'
-        device.value.error = result.error || '设备码已过期'
+        device.value.error = result.error || t('ui.deviceCodeExpired')
         return
       case 'error':
         stopDevicePolling()
         device.value.status = 'error'
-        device.value.error = result.error || '授权失败'
+        device.value.error = result.error || t('ui.authorizationFailed')
         return
     }
   } catch (err: unknown) {
     if (withCallback) {
-      const errorMessage = localizedApiError(err, '完成授权失败')
-      showError(errorMessage, legacyT('错误'))
+      const errorMessage = localizedApiError(err, t('ui.failedToCompleteAuthorization'))
+      showError(errorMessage, t('ui.error'))
     }
     // 网络错误等，继续轮询
     if (!withCallback && !device.value.callback_required) {

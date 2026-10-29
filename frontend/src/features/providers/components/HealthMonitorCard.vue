@@ -1,12 +1,12 @@
 <template>
   <HealthMonitorSection
-    :title="title"
-    description="基于真实请求统计端点可用率、平均耗时、平均TTFB 与平均速度"
+    :title="title || t('nav.healthMonitor')"
+    :description="t('ui.basedOnRealRequestStatisticsEndpointAvailabilityAverageDurationAverage')"
     :icon="Activity"
-    empty-title="暂无健康监控数据"
-    empty-description="端点尚未产生请求记录"
-    entity-label="端点"
-    error-message="加载健康监控数据失败"
+    :empty-title="t('ui.noHealthMonitoringData')"
+    :empty-description="t('ui.thisEndpointHasNoRequestRecordsYet')"
+    :entity-label="t('ui.endpoint52fff16')"
+    :error-message="t('ui.failedToLoadHealthMonitoringData')"
     :load="loadEndpointMonitors"
     @view-details="$emit('viewDetails', $event)"
     @summary-updated="$emit('summaryUpdated', $event)"
@@ -23,8 +23,11 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+
 import { Activity } from 'lucide-vue-next'
-import HealthMonitorSection, { type HealthMonitorSectionData } from './HealthMonitorSection.vue'
+import HealthMonitorSection from './HealthMonitorSection.vue'
+import type { HealthMonitorSectionData } from './health-monitor-utils'
 import EndpointHealthTimeline from './EndpointHealthTimeline.vue'
 import { getEndpointStatusMonitor, getPublicEndpointStatusMonitor } from '@/api/endpoints/health'
 import type { EndpointStatusMonitor, PublicEndpointStatusMonitor } from '@/api/endpoints/types'
@@ -42,7 +45,7 @@ const props = withDefaults(defineProps<{
   isAdmin?: boolean
   showProviderInfo?: boolean
 }>(), {
-  title: '健康监控',
+  title: '',
   isAdmin: false,
   showProviderInfo: false
 })
@@ -51,6 +54,8 @@ defineEmits<{
   viewDetails: [target: HealthMonitorDetailTarget]
   summaryUpdated: [summary: HealthMonitorSectionSummary]
 }>()
+
+const { t } = useI18n()
 
 function hasProviderInfo(monitor: EndpointMonitor): monitor is EndpointStatusMonitor {
   return 'provider_count' in monitor && typeof monitor.provider_count === 'number'
@@ -61,9 +66,9 @@ function hasApiPath(monitor: EndpointMonitor): monitor is PublicEndpointStatusMo
 }
 
 function getEndpointMetaText(monitor: EndpointMonitor) {
-  const attempts = `${formatCompactNumber(monitor.total_attempts)} 次请求`
+  const attempts = t('heatmap.requests', { count: String(formatCompactNumber(monitor.total_attempts)) })
   if (props.showProviderInfo && hasProviderInfo(monitor)) {
-    return `${monitor.provider_count} 个提供商 / ${monitor.key_count} 个密钥 / ${attempts}`
+    return t('providers.migration.providersKeys6fdfef', { value: String(monitor.provider_count), value_2: String(monitor.key_count), value_3: String(attempts) })
   }
   if (hasApiPath(monitor)) {
     return `${monitor.api_path} / ${attempts}`
@@ -73,7 +78,7 @@ function getEndpointMetaText(monitor: EndpointMonitor) {
 
 function getEndpointDetailMetaText(monitor: EndpointMonitor) {
   if (props.showProviderInfo && hasProviderInfo(monitor)) {
-    return `${monitor.provider_count} 个提供商 / ${monitor.key_count} 个密钥`
+    return t('providers.migration.providersKeys168008', { value: String(monitor.provider_count), value_2: String(monitor.key_count) })
   }
   if (hasApiPath(monitor)) {
     return monitor.api_path
@@ -116,4 +121,5 @@ async function loadEndpointMonitors(lookbackHours: number): Promise<HealthMonito
     })),
   }
 }
+
 </script>

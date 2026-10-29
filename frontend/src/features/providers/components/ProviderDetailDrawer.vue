@@ -52,7 +52,7 @@
           <div class="p-4 border-b border-border/60">
             <div class="flex items-center justify-between">
               <h3 class="text-sm font-semibold">
-                {{ legacyT(isKeyManagedProviderType(provider.provider_type) ? '密钥管理' : '账号管理') }}
+                {{ isKeyManagedProviderType(provider.provider_type) ? t('ui.keyManagement') : t('ui.accountManagement') }}
               </h3>
               <div class="flex flex-wrap items-center justify-end gap-2">
                 <Button
@@ -62,8 +62,7 @@
                   class="h-9"
                   @click="keyBatchImportDialogOpen = true"
                 >
-                  <ListPlus class="mr-1.5 h-3.5 w-3.5" />
-                  批量导入
+                  <ListPlus class="mr-1.5 h-3.5 w-3.5" /> {{ t('ui.bulkImport') }}
                 </Button>
                 <Button
                   v-if="endpoints.length > 0"
@@ -73,7 +72,7 @@
                   @click="handleAddKeyToFirstEndpoint"
                 >
                   <Plus class="w-3.5 h-3.5 mr-1.5" />
-                  {{ legacyT(isKeyManagedProviderType(provider.provider_type) ? '添加密钥' : '添加账号') }}
+                  {{ isKeyManagedProviderType(provider.provider_type) ? t('guide.nav.concepts.addKey') : t('ui.addAccount') }}
                 </Button>
               </div>
             </div>
@@ -85,7 +84,7 @@
             class="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground"
           >
             <Loader2 class="w-4 h-4 animate-spin" />
-            {{ legacyT('正在加载') }}{{ legacyT(isKeyManagedProviderType(provider.provider_type) ? '密钥' : '账号') }}
+            {{ t('ui.loadingf020e46') }}{{ isKeyManagedProviderType(provider.provider_type) ? t('ui.key') : t('ui.account') }}
           </div>
 
           <div
@@ -179,7 +178,7 @@
                 <!-- 优先级放最前面，支持点击编辑 -->
                 <span
                   v-if="editingPriorityKey !== key.id"
-                  :title="legacyT('点击编辑优先级')"
+                  :title="t('ui.editPriority')"
                   class="font-medium text-foreground/80 cursor-pointer hover:text-primary hover:underline"
                   @click="startEditPriority(key)"
                 >P{{ key.internal_priority }}</span>
@@ -202,15 +201,15 @@
                     :class="key.last_models_fetch_error ? 'text-amber-600 dark:text-amber-400' : ''"
                     :title="getAutoFetchStatusTitle(key)"
                   >
-                    {{ legacyT(key.last_models_fetch_error ? '同步失败' : '自动同步') }}
+                    {{ key.last_models_fetch_error ? t('models.pricingSource.syncFailed') : t('ui.autoSync') }}
                   </span>
                 </template>
                 <!-- RPM 限制信息（第二位） -->
                 <template v-if="key.rpm_limit || key.is_adaptive">
                   <span class="text-muted-foreground/40">|</span>
                   <span v-if="key.is_adaptive">
-                    {{ key.learned_rpm_limit != null ? `${key.learned_rpm_limit}` : legacyT('探测中') }} RPM
-                    <span class="text-muted-foreground/60">({{ legacyT('自适应') }})</span>
+                    {{ key.learned_rpm_limit != null ? `${key.learned_rpm_limit}` : t('ui.probing') }} RPM
+                    <span class="text-muted-foreground/60">({{ t('ui.adaptive') }})</span>
                   </span>
                   <span v-else>{{ key.rpm_limit }} RPM</span>
                 </template>
@@ -229,7 +228,7 @@
                   </span>
                   <span
                     v-if="editingMultiplierKey !== key.id || editingMultiplierFormat !== format"
-                    :title="legacyT('点击编辑倍率')"
+                    :title="t('ui.editMultiplier')"
                     class="cursor-pointer hover:text-primary hover:underline"
                     :class="{ 'text-destructive': isFormatCircuitOpen(key, format) }"
                     @click="startEditMultiplier(key, format)"
@@ -257,7 +256,7 @@
               v-if="shouldPaginateKeys"
               class="px-4 py-2 flex items-center justify-between text-xs text-muted-foreground mt-auto"
             >
-              <span>{{ legacyT('共') }} {{ providerKeysTotal }} {{ legacyT('个') }}{{ legacyT(isKeyManagedProviderType(provider.provider_type) ? '密钥' : '账号') }}</span>
+              <span>{{ t('ui.total76e547a') }} {{ providerKeysTotal }} {{ t('ui.items3a11681') }}{{ isKeyManagedProviderType(provider.provider_type) ? t('ui.key') : t('ui.account') }}</span>
               <div class="flex items-center gap-1.5">
                 <Button
                   variant="ghost"
@@ -289,12 +288,12 @@
           >
             <Key class="w-12 h-12 mx-auto mb-3 opacity-50" />
             <p class="text-sm">
-              {{ legacyT(isKeyManagedProviderType(provider.provider_type) ? '暂无密钥配置' : '暂无账号配置') }}
+              {{ isKeyManagedProviderType(provider.provider_type) ? t('ui.noKeysConfigured') : t('ui.noAccountsConfigured') }}
             </p>
             <p class="text-xs mt-1">
               {{ endpoints.length > 0
-                ? legacyT(isKeyManagedProviderType(provider.provider_type) ? '点击上方"添加密钥"按钮创建第一个密钥' : '点击上方"添加账号"按钮添加第一个账号')
-                : legacyT('请先添加端点，然后再添加密钥') }}
+                ? isKeyManagedProviderType(provider.provider_type) ? t('ui.addYourFirstKeyToGetStarted') : t('ui.addYourFirstAccountToGetStarted')
+                : t('ui.addAnEndpointBeforeAddingKeys') }}
             </p>
           </div>
         </Card>
@@ -398,10 +397,10 @@
   <AlertDialog
     v-if="open && deleteKeyConfirmOpen"
     :model-value="deleteKeyConfirmOpen"
-    :title="legacyT('删除密钥')"
+    :title="t('ui.deleteKey')"
     :description="formatDeleteKeyConfirmDescription()"
-    :confirm-text="legacyT('删除')"
-    :cancel-text="legacyT('取消')"
+    :confirm-text="t('ui.delete')"
+    :cancel-text="t('common.cancel')"
     type="danger"
     @update:model-value="deleteKeyConfirmOpen = $event"
     @confirm="confirmDeleteKey"
@@ -435,7 +434,7 @@
     :open="antigravityQuotaDialogOpen"
     :metadata="antigravityQuotaDialogKey.upstream_metadata ?? null"
     :quota-snapshot="antigravityQuotaDialogKey.status_snapshot?.quota ?? null"
-    :key-name="antigravityQuotaDialogKey.name || legacyT('未命名密钥')"
+    :key-name="antigravityQuotaDialogKey.name || t('ui.unnamedKey')"
     :provider-id="providerId ?? undefined"
     :key-id="antigravityQuotaDialogKey.id"
     @update:open="antigravityQuotaDialogOpen = $event"
@@ -596,6 +595,8 @@ const emit = defineEmits<{
   (e: 'refresh'): void
 }>()
 
+const { t, locale } = useI18n()
+
 const { error: showError, success: showSuccess, warning: showWarning } = useToast()
 const { confirm } = useConfirm()
 const { copyToClipboard } = useClipboard()
@@ -604,10 +605,9 @@ const {
   hasAntigravityQuotaDisplayData,
   hasClaudeCodeQuotaDisplayData,
 } = useProviderKeyQuotaPresentation(countdownTick)
-const { legacyT, locale } = useI18n()
 
 function localizedApiError(err: unknown, fallback: string): string {
-  return legacyT(parseApiError(err, fallback))
+  return parseApiError(err, fallback)
 }
 
 const loading = ref(false)
@@ -934,10 +934,10 @@ async function toggleFormatConversion() {
   try {
     const updated = await updateProvider(provider.value.id, { enable_format_conversion: newValue })
     applyProviderSnapshot(updated)
-    showSuccess(legacyT(newValue ? '已启用格式转换' : '已禁用格式转换'))
+    showSuccess(newValue ? t('ui.formatConversionEnabled') : t('ui.formatConversionDisabled2c1997b'))
     emit('refresh')
   } catch {
-    showError(legacyT('切换格式转换失败'))
+    showError(t('ui.failedToToggleFormatConversion'))
   }
 }
 
@@ -952,16 +952,16 @@ async function toggleKeepPriorityOnConversion() {
       keep_priority_on_conversion: newValue,
     })
     applyProviderSnapshot(updated)
-    showSuccess(legacyT(newValue ? '已启用格式转换保持优先级' : '已禁用格式转换保持优先级'))
+    showSuccess(newValue ? t('ui.priorityPreservationDuringFormatConversionEnabled') : t('ui.priorityPreservationDuringFormatConversionDisabled'))
     emit('refresh')
   } catch {
-    showError(legacyT('切换格式转换保持优先级失败'))
+    showError(t('ui.failedToChangeFormatConversionPriorityPreservation'))
   }
 }
 
 function getProviderProxyNodeName(): string {
   const nodeId = provider.value?.proxy?.node_id
-  if (!nodeId) return legacyT('未知节点')
+  if (!nodeId) return t('ui.unknownNode')
   const node = proxyNodesStore.nodes.find(n => n.id === nodeId)
   return node ? node.name : `${nodeId.slice(0, 8)}...`
 }
@@ -975,10 +975,10 @@ async function setProviderProxy(nodeId: string) {
     })
     applyProviderSnapshot(updated)
     providerProxyPopoverOpen.value = false
-    showSuccess(legacyT('代理节点已设置'))
+    showSuccess(t('ui.proxyNodeSet'))
     emit('refresh')
   } catch (err: unknown) {
-    showError(localizedApiError(err, '设置代理失败'))
+    showError(localizedApiError(err, t('ui.failedToSetProxy')))
   } finally {
     savingProviderProxy.value = false
   }
@@ -991,10 +991,10 @@ async function clearProviderProxy() {
     const updated = await updateProvider(provider.value.id, { proxy: null })
     applyProviderSnapshot(updated)
     providerProxyPopoverOpen.value = false
-    showSuccess(legacyT('已清除提供商代理'))
+    showSuccess(t('ui.providerProxyCleared'))
     emit('refresh')
   } catch (err: unknown) {
-    showError(localizedApiError(err, '清除代理失败'))
+    showError(localizedApiError(err, t('ui.failedToClearProxy')))
   } finally {
     savingProviderProxy.value = false
   }
@@ -1078,7 +1078,7 @@ async function copyFullKey(key: EndpointAPIKey) {
     revealedKeys.value.set(key.id, textToCopy)
     copyToClipboard(textToCopy)
   } catch (err: unknown) {
-    showError(localizedApiError(err, '获取密钥失败'), legacyT('错误'))
+    showError(localizedApiError(err, t('ui.failedToRetrieveKey')), t('ui.error'))
   }
 }
 
@@ -1099,10 +1099,9 @@ async function downloadRefreshToken(key: EndpointAPIKey) {
     document.body.removeChild(a)
     URL.revokeObjectURL(url)
   } catch (err: unknown) {
-    showError(localizedApiError(err, '导出失败'), legacyT('错误'))
+    showError(localizedApiError(err, t('ui.exportFailed')), t('ui.error'))
   }
 }
-
 
 function handleDeleteKey(key: EndpointAPIKey) {
   keyToDelete.value = key
@@ -1111,9 +1110,7 @@ function handleDeleteKey(key: EndpointAPIKey) {
 
 function formatDeleteKeyConfirmDescription(): string {
   const keyName = keyToDelete.value?.api_key_masked || keyToDelete.value?.name || ''
-  return locale.value === 'en-US'
-    ? `Delete key ${keyName}?`
-    : `确定要删除密钥 ${keyName} 吗？`
+  return t('providers.migration.deleteKey56506e', { value: String(keyName) })
 }
 
 async function confirmDeleteKey() {
@@ -1125,23 +1122,23 @@ async function confirmDeleteKey() {
 
   try {
     await deleteEndpointKey(keyId)
-    showSuccess(legacyT('密钥已删除'))
+    showSuccess(t('ui.keyDeleted'))
     // 刷新端点列表及模型数据（删除 Key 触发自动解除模型关联）
     await Promise.all([loadProvider(), loadEndpoints(), loadMappingPreview()])
     emit('refresh')
   } catch (err: unknown) {
-    showError(localizedApiError(err, '删除密钥失败'), legacyT('错误'))
+    showError(localizedApiError(err, t('ui.failedToDeleteKey')), t('ui.error'))
   }
 }
 
 async function handleRecoverKey(key: EndpointAPIKey) {
   try {
     const result = await recoverKeyHealth(key.id)
-    showSuccess(legacyT(result.message || 'Key已完全恢复'))
+    showSuccess((result.message || t('ui.keyFullyRecovered')))
     await Promise.all([loadProvider(), loadEndpoints()])
     emit('refresh')
   } catch (err: unknown) {
-    showError(localizedApiError(err, 'Key恢复失败'), legacyT('错误'))
+    showError(localizedApiError(err, t('ui.failedToRestoreKey')), t('ui.error'))
   }
 }
 
@@ -1186,9 +1183,9 @@ async function handleRefreshOAuth(key: EndpointAPIKey) {
       snapshot: refreshedKey,
     })
     if (feedback.tone === 'warning') {
-      showWarning(legacyT(feedback.message))
+      showWarning(feedback.message)
     } else {
-      showSuccess(legacyT(feedback.message))
+      showSuccess(feedback.message)
     }
     emit('refresh')
     // Token 刷新可能激活账号并更新配额，完成后再同步一次父列表。
@@ -1196,7 +1193,7 @@ async function handleRefreshOAuth(key: EndpointAPIKey) {
       if (changed) emit('refresh')
     })
   } catch (err: unknown) {
-    showError(localizedApiError(err, 'Token 刷新失败'), legacyT('错误'))
+    showError(localizedApiError(err, t('ui.failedToRefreshToken')), t('ui.error'))
     await Promise.all([loadProvider(), loadEndpoints()])
     emit('refresh')
   } finally {
@@ -1213,9 +1210,7 @@ function isAccountLevelBlock(key: EndpointAPIKey): boolean {
 
 function formatClearOAuthInvalidConfirmMessage(key: EndpointAPIKey): string {
   const keyName = key.name || key.id.slice(0, 8)
-  return locale.value === 'en-US'
-    ? `Confirm account "${keyName}" has completed manual verification? After clearing, the system will re-evaluate this key using the current manual switch and scheduling state.`
-    : `确认账号 "${keyName}" 已手动完成验证？清除后系统会按当前手动开关和调度状态重新评估该 Key。`
+  return t('providers.migration.confirmThatAccountHasBeend65cff', { value: String(keyName) })
 }
 
 // 清除 OAuth 失效标记
@@ -1223,9 +1218,9 @@ async function handleClearOAuthInvalid(key: EndpointAPIKey) {
   if (clearingOAuthInvalidKeyId.value) return
 
   const confirmed = await confirm({
-    title: legacyT('清除账号异常标记'),
+    title: t('ui.clearAccountIssueMarker'),
     message: formatClearOAuthInvalidConfirmMessage(key),
-    confirmText: legacyT('确认清除'),
+    confirmText: t('ui.confirmClear'),
     variant: 'info',
   })
   if (!confirmed) return
@@ -1233,7 +1228,7 @@ async function handleClearOAuthInvalid(key: EndpointAPIKey) {
   clearingOAuthInvalidKeyId.value = key.id
   try {
     await clearOAuthInvalid(key.id)
-    showSuccess(legacyT('已清除 OAuth 异常标记'))
+    showSuccess(t('ui.oauthIssueMarkerCleared'))
     // 更新本地数据
     const keyInList = providerKeys.value.find(k => k.id === key.id)
     if (keyInList) {
@@ -1264,7 +1259,7 @@ async function handleClearOAuthInvalid(key: EndpointAPIKey) {
     await Promise.all([loadProvider(), loadEndpoints()])
     emit('refresh')
   } catch (err: unknown) {
-    showError(localizedApiError(err, '清除失败'), legacyT('错误'))
+    showError(localizedApiError(err, t('ui.failedToClear')), t('ui.error'))
     await Promise.all([loadProvider(), loadEndpoints()])
     emit('refresh')
   } finally {
@@ -1277,15 +1272,15 @@ function codexResetCreditOutcomeFeedback(
 ): { tone: 'success' | 'warning'; message: string } {
   switch (result.outcome) {
     case 'reset':
-      return { tone: 'success', message: '已使用 Codex 重置机会，并刷新账号配额' }
+      return { tone: 'success', message: t('ui.codexQuotaResetUsedAccountQuotaRefreshedb0ca5d5') }
     case 'already_redeemed':
-      return { tone: 'success', message: '本次重置请求已处理，账号配额已刷新' }
+      return { tone: 'success', message: t('ui.resetRequestProcessedAccountQuotaRefreshed') }
     case 'nothing_to_reset':
-      return { tone: 'warning', message: '当前没有需要重置的 Codex 额度窗口' }
+      return { tone: 'warning', message: t('ui.noCodexQuotaWindowsNeedAReset') }
     case 'no_credit':
-      return { tone: 'warning', message: '当前没有可用的 Codex 重置机会' }
+      return { tone: 'warning', message: t('ui.noCodexQuotaResetsAvailable') }
     default:
-      return { tone: 'warning', message: '重置请求已返回，但结果类型未知，请查看最新账号配额' }
+      return { tone: 'warning', message: t('ui.theResetReturnedAnUnknownResultCheckTheLatestAccount') }
   }
 }
 
@@ -1312,15 +1307,15 @@ async function handleConsumeCodexResetCredit(key: EndpointAPIKey) {
   const pendingIdempotencyKey = getPendingCodexResetCreditIdempotencyKey(key)
   const earliest = getVisibleCodexResetCreditItems(key)[0]
   const detailMessage = earliest
-    ? `\n当前最早过期项：${earliest.displayKey}，${formatCodexResetCreditExpiresAt(earliest.expiresAt)} 过期。`
+    ? t('providers.migration.nextToExpireExpiresAtf3a4e3', { value: String(earliest.displayKey), value_2: String(formatCodexResetCreditExpiresAt(earliest.expiresAt)) })
     : ''
   const confirmed = await confirm({
-    title: legacyT('确认使用 Codex 重置机会'),
+    title: t('ui.confirmCodexQuotaReset'),
     message: pendingIdempotencyKey
-      ? legacyT('将继续确认上次尚未完成的 Codex 重置请求。')
-      : `${legacyT('将消耗 1 次 Codex 重置机会。操作完成后会重新刷新账号配额状态。')}${detailMessage}`,
-    confirmText: legacyT('确认重置'),
-    cancelText: legacyT('取消'),
+      ? t('ui.thePendingCodexResetRequestWillBeCheckedAgain')
+      : `${t('ui.usesOneCodexQuotaResetAccountQuotaWillRefreshWhen')}${detailMessage}`,
+    confirmText: t('ui.confirmReset'),
+    cancelText: t('common.cancel'),
     variant: 'warning',
   })
   if (!confirmed) return
@@ -1345,12 +1340,12 @@ async function handleConsumeCodexResetCredit(key: EndpointAPIKey) {
 
     const feedback = codexResetCreditOutcomeFeedback(result)
     if (feedback.tone === 'success') {
-      showSuccess(legacyT(feedback.message))
+      showSuccess(feedback.message)
     } else {
-      showWarning(legacyT(feedback.message))
+      showWarning(feedback.message)
     }
     if (result.refresh_status === 'failed') {
-      showWarning(legacyT(result.refresh_error || '重置请求已处理，但最新配额刷新失败'))
+      showWarning((result.refresh_error || t('ui.resetRequestProcessedButTheLatestQuotaCouldNotBe')))
     }
     emit('refresh')
   } catch (err: unknown) {
@@ -1364,7 +1359,7 @@ async function handleConsumeCodexResetCredit(key: EndpointAPIKey) {
         credentialGeneration,
       )
     }
-    showError(localizedApiError(err, 'Codex 重置机会使用失败'), legacyT('错误'))
+    showError(localizedApiError(err, t('ui.failedToUseCodexQuotaReset')), t('ui.error'))
     await Promise.all([loadProvider(), loadEndpoints()])
     emit('refresh')
   } finally {
@@ -1743,12 +1738,12 @@ async function autoRefreshQuotaInBackground(): Promise<boolean> {
     if (!result) return false
     const applied = applyQuotaResults(result.results)
     if (result.success <= 0 && applied === 0 && !hadCachedQuota && providerType === 'antigravity') {
-      showWarning(legacyT('配额暂未就绪，请稍后刷新'), legacyT('提示'))
+      showWarning(t('ui.quotaInformationIsNotReadyYetPleaseRefreshAgainShortly'), t('ui.notice'))
     }
     return applied > 0
   } catch (err: unknown) {
     if (isCurrent() && !hadCachedQuota && providerType === 'antigravity') {
-      showError(localizedApiError(err, '后台刷新配额失败'), legacyT('错误'))
+      showError(localizedApiError(err, t('ui.failedToRefreshQuotaInTheBackground')), t('ui.error'))
     }
     return false
   } finally {
@@ -1816,10 +1811,10 @@ async function toggleKeyActive(key: EndpointAPIKey) {
     Object.assign(key, updated)
     key.is_active = newStatus
     await Promise.all([loadProvider(), loadEndpoints()])
-    showSuccess(legacyT(newStatus ? '密钥已启用' : '密钥已停用'))
+    showSuccess(newStatus ? t('ui.keyEnabled') : t('ui.keyDisabled0261100'))
     emit('refresh')
   } catch (err: unknown) {
-    showError(localizedApiError(err, '操作失败'), legacyT('错误'))
+    showError(localizedApiError(err, t('ui.operationFailed')), t('ui.error'))
   } finally {
     togglingKeyId.value = null
   }
@@ -1851,10 +1846,10 @@ async function setKeyProxy(key: EndpointAPIKey, nodeId: string) {
     })
     key.proxy = { node_id: nodeId, enabled: true }
     proxyPopoverOpenKeyId.value = null
-    showSuccess(legacyT('代理节点已设置'))
+    showSuccess(t('ui.proxyNodeSet'))
     emit('refresh')
   } catch (err: unknown) {
-    showError(localizedApiError(err, '设置代理失败'), legacyT('错误'))
+    showError(localizedApiError(err, t('ui.failedToSetProxy')), t('ui.error'))
   } finally {
     savingProxyKeyId.value = null
   }
@@ -1867,10 +1862,10 @@ async function clearKeyProxy(key: EndpointAPIKey) {
     await updateProviderKey(key.id, { proxy: null })
     key.proxy = null
     proxyPopoverOpenKeyId.value = null
-    showSuccess(legacyT('已清除账号代理，将使用提供商级别代理'))
+    showSuccess(t('ui.accountProxyClearedProviderLevelProxyWillBeUsed'))
     emit('refresh')
   } catch (err: unknown) {
-    showError(localizedApiError(err, '清除代理失败'), legacyT('错误'))
+    showError(localizedApiError(err, t('ui.failedToClearProxy')), t('ui.error'))
   } finally {
     savingProxyKeyId.value = null
   }
@@ -1968,7 +1963,7 @@ async function savePriority(key: EndpointAPIKey) {
 
   try {
     await updateProviderKey(keyId, { internal_priority: newPriority })
-    showSuccess(legacyT('优先级已更新'))
+    showSuccess(t('ui.priorityUpdated'))
     // 更新本地数据 - 更新 providerKeys 中的数据
     const keyToUpdate = providerKeys.value.find(k => k.id === keyId)
     if (keyToUpdate) {
@@ -1978,7 +1973,7 @@ async function savePriority(key: EndpointAPIKey) {
     providerKeys.value.sort((a, b) => (a.internal_priority ?? 0) - (b.internal_priority ?? 0))
     emit('refresh')
   } catch (err: unknown) {
-    showError(localizedApiError(err, '更新优先级失败'), legacyT('错误'))
+    showError(localizedApiError(err, t('ui.failedToUpdatePriority')), t('ui.error'))
   }
 }
 
@@ -2027,7 +2022,7 @@ async function saveMultiplier(key: EndpointAPIKey, format: string) {
 
   // 验证输入有效性
   if (!keyId || isNaN(newMultiplier)) {
-    showError(legacyT('请输入有效的倍率值'))
+    showError(t('ui.enterAValidMultiplier'))
     cancelEditMultiplier()
     multiplierSaving.value = false
     return
@@ -2035,7 +2030,7 @@ async function saveMultiplier(key: EndpointAPIKey, format: string) {
 
   // 验证合理范围
   if (newMultiplier <= 0 || newMultiplier > 100) {
-    showError(legacyT('倍率必须在 0.01 到 100 之间'))
+    showError(t('ui.multiplierMustBeBetween001And100'))
     cancelEditMultiplier()
     multiplierSaving.value = false
     return
@@ -2057,7 +2052,7 @@ async function saveMultiplier(key: EndpointAPIKey, format: string) {
     rateMultipliers[format] = newMultiplier
 
     await updateProviderKey(keyId, { rate_multipliers: rateMultipliers })
-    showSuccess(legacyT('倍率已更新'))
+    showSuccess(t('ui.multiplierUpdated'))
 
     // 更新本地数据
     const keyToUpdate = providerKeys.value.find(k => k.id === keyId)
@@ -2066,7 +2061,7 @@ async function saveMultiplier(key: EndpointAPIKey, format: string) {
     }
     emit('refresh')
   } catch (err: unknown) {
-    showError(localizedApiError(err, '更新倍率失败'), legacyT('错误'))
+    showError(localizedApiError(err, t('ui.failedToUpdateMultiplier')), t('ui.error'))
   } finally {
     multiplierSaving.value = false
   }
@@ -2178,11 +2173,11 @@ async function handleKeyDrop(event: DragEvent, targetIndex: number) {
     })
 
     await Promise.all(updatePromises)
-    showSuccess(legacyT('优先级已更新'))
+    showSuccess(t('ui.priorityUpdated'))
     await loadEndpoints()
     emit('refresh')
   } catch (err: unknown) {
-    showError(localizedApiError(err, '更新优先级失败'), legacyT('错误'))
+    showError(localizedApiError(err, t('ui.failedToUpdatePriority')), t('ui.error'))
     await loadEndpoints()
   }
 }
@@ -2313,45 +2308,45 @@ function getKeyCircuitProbeCountdown(key: EndpointAPIKey): string {
     return ''
   }
   const diffMs = nextProbe - Date.now()
-  return diffMs > 0 ? ` ${formatCountdown(diffMs)}` : ` ${legacyT('探测中')}`
+  return diffMs > 0 ? ` ${formatCountdown(diffMs)}` : ` ${t('ui.probing')}`
 }
 
 function getKeyCircuitBreakerTitle(key: EndpointAPIKey): string {
   const entries = getOpenCircuitEntries(key)
-  if (entries.length === 0) return legacyT('熔断器已打开')
+  if (entries.length === 0) return t('ui.circuitBreakerIsOpen')
   const parts = entries.map(([format, value]) => {
     const label = formatApiFormatShort(format)
-    const reason = value.reason ? `${legacyT('原因')}: ${value.reason}` : `${legacyT('原因')}: ${legacyT('连续失败')}`
+    const reason = value.reason ? `${t('ui.reasonf029d9c')}: ${value.reason}` : `${t('ui.reasonf029d9c')}: ${t('ui.consecutiveFailures')}`
     const interval = typeof value.probe_interval_minutes === 'number'
-      ? `${legacyT('探测间隔')}: ${value.probe_interval_minutes} ${legacyT('分钟')}`
+      ? `${t('ui.probeInterval')}: ${value.probe_interval_minutes} ${t('ui.minutesbd957bc')}`
       : ''
     const countdown = getFormatProbeCountdown(key, format).trim()
-    return [label, reason, interval, countdown ? `${legacyT('状态')}: ${countdown}` : '']
+    return [label, reason, interval, countdown ? `${t('ui.status6320b4a')}: ${countdown}` : '']
       .filter(Boolean)
       .join(' / ')
   })
-  parts.push(legacyT('点击恢复按钮可重置熔断器'))
+  parts.push(t('ui.useTheRecoverButtonToResetTheCircuitBreaker'))
   return parts.join('\n')
 }
 
 function getRecoverKeyTitle(key: EndpointAPIKey): string {
   if (key.circuit_breaker_open) {
-    return legacyT('重置熔断器并恢复健康状态')
+    return t('ui.resetCircuitBreakerAndRecoverHealth')
   }
-  return legacyT('刷新健康状态')
+  return t('ui.refreshHealthStatus')
 }
 
 // 获取自动获取模型状态的 title 提示
 function getAutoFetchStatusTitle(key: EndpointAPIKey): string {
-  const parts: string[] = [legacyT('自动获取模型已启用')]
+  const parts: string[] = [t('ui.autoModelFetchIsEnabled')]
 
   if (key.last_models_fetch_at) {
     const date = new Date(key.last_models_fetch_at)
-    parts.push(`${legacyT('上次同步')}: ${date.toLocaleString(locale.value)}`)
+    parts.push(`${t('ui.lastSync')}: ${date.toLocaleString(locale.value)}`)
   }
 
   if (key.last_models_fetch_error) {
-    parts.push(`${legacyT('错误')}: ${key.last_models_fetch_error}`)
+    parts.push(`${t('ui.error')}: ${key.last_models_fetch_error}`)
   }
 
   return parts.join('\n')
@@ -2378,7 +2373,7 @@ function getFormatProbeCountdown(key: EndpointAPIKey, format: string): string {
     const halfOpenUntil = new Date(formatData.half_open_until)
     const now = new Date()
     if (halfOpenUntil > now) {
-      return ` ${legacyT('探测中')}`
+      return ` ${t('ui.probing')}`
     }
   }
   // 等待探测
@@ -2390,7 +2385,7 @@ function getFormatProbeCountdown(key: EndpointAPIKey, format: string): string {
     if (diffMs > 0) {
       return ` ${formatCountdown(diffMs)}`
     } else {
-      return ` ${legacyT('探测中')}`
+      return ` ${t('ui.probing')}`
     }
   }
   return ''
@@ -2425,11 +2420,11 @@ async function loadProvider() {
     keyPageSize.value = getProviderKeysPageSize(providerData.provider_type)
 
     if (!provider.value) {
-      throw new Error(legacyT('Provider 不存在'))
+      throw new Error(t('ui.providerDoesNotExist'))
     }
   } catch (err: unknown) {
     if (requestId !== providerLoadRequestId) return
-    showError(localizedApiError(err, '加载失败'), legacyT('错误'))
+    showError(localizedApiError(err, t('ui.failedToLoad')), t('ui.error'))
   } finally {
     if (requestId === providerLoadRequestId && shouldShowSpinner) {
       loading.value = false
@@ -2466,7 +2461,7 @@ async function loadProviderKeysPage(page = currentKeyPage.value) {
     providerKeys.value = []
     providerKeysTotal.value = 0
     syncCurrentSelections(endpoints.value, [])
-    showError(localizedApiError(err, '加载密钥失败'), legacyT('错误'))
+    showError(localizedApiError(err, t('ui.failedToLoadKeys')), t('ui.error'))
   } finally {
     if (requestId === keysLoadRequestId) {
       loadingProviderKeys.value = false
@@ -2505,7 +2500,7 @@ async function loadEndpoints() {
       if (requestId !== endpointsLoadRequestId) return
       endpoints.value = []
       syncCurrentSelections([], providerKeys.value)
-      showError(localizedApiError(err, '加载端点失败'), legacyT('错误'))
+      showError(localizedApiError(err, t('ui.failedToLoadEndpoints')), t('ui.error'))
     })
     .finally(() => {
       if (requestId === endpointsLoadRequestId) {

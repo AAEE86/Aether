@@ -1,12 +1,12 @@
 <template>
   <HealthMonitorSection
-    :title="title"
-    description="仅展示活跃提供商，点击详情查看该提供商关联的端点与模型健康"
+    :title="title || t('ui.providerHealthMonitor')"
+    :description="t('ui.onlyActiveProvidersAreShownClickDetailsToViewLinked')"
     :icon="Server"
-    empty-title="暂无提供商健康数据"
-    empty-description="当前没有提供商产生请求记录"
-    entity-label="提供商"
-    error-message="加载提供商健康监控数据失败"
+    :empty-title="t('ui.noProviderHealthData')"
+    :empty-description="t('ui.noProvidersHaveRequestRecordsYet')"
+    :entity-label="t('nav.providers')"
+    :error-message="t('ui.failedToLoadProviderHealthMonitoringData')"
     :load="loadProviderMonitors"
     @view-details="$emit('viewDetails', $event)"
     @summary-updated="$emit('summaryUpdated', $event)"
@@ -14,8 +14,11 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+
 import { Server } from 'lucide-vue-next'
-import HealthMonitorSection, { type HealthMonitorSectionData } from './HealthMonitorSection.vue'
+import HealthMonitorSection from './HealthMonitorSection.vue'
+import type { HealthMonitorSectionData } from './health-monitor-utils'
 import { getProviderStatusMonitor } from '@/api/endpoints/health'
 import type { ProviderStatusMonitor } from '@/api/endpoints/types'
 import {
@@ -27,13 +30,15 @@ import {
 withDefaults(defineProps<{
   title?: string
 }>(), {
-  title: '提供商健康监控'
+  title: ''
 })
 
 defineEmits<{
   viewDetails: [target: HealthMonitorDetailTarget]
   summaryUpdated: [summary: HealthMonitorSectionSummary]
 }>()
+
+const { t } = useI18n()
 
 async function loadProviderMonitors(lookbackHours: number): Promise<HealthMonitorSectionData<ProviderStatusMonitor>> {
   const data = await getProviderStatusMonitor({
@@ -48,7 +53,7 @@ async function loadProviderMonitors(lookbackHours: number): Promise<HealthMonito
     items: providers.map(provider => ({
       key: provider.provider_id,
       title: provider.provider_name,
-      metaText: `${provider.model_count} 个模型 / ${formatCompactNumber(provider.total_attempts)} 次请求`,
+      metaText: t('providers.migration.modelsRequests310deb', { value: String(provider.model_count), value_2: String(formatCompactNumber(provider.total_attempts)) }),
       entityName: provider.provider_name,
       monitor: provider,
       raw: provider,
@@ -72,4 +77,5 @@ async function loadProviderMonitors(lookbackHours: number): Promise<HealthMonito
     })),
   }
 }
+
 </script>

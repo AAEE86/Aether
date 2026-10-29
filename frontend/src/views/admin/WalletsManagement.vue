@@ -4,10 +4,10 @@
       <div class="px-5 py-4 border-b border-border/60 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <h3 class="text-base font-semibold">
-            钱包管理
+            {{ t('nav.walletManagement') }}
           </h3>
           <p class="text-xs text-muted-foreground mt-1">
-            统一管理资金流水、退款审批、充值订单与支付回调
+            {{ t('ui.manageWalletLedgerRefundApprovalsTopUpOrdersAndPayment') }}
           </p>
         </div>
       </div>
@@ -20,14 +20,14 @@
           aria-live="polite"
         >
           <div class="flex flex-wrap items-center justify-between gap-2">
-            <span class="text-sm font-semibold">{{ locationLoading ? '正在定位目标...' : locationError ? '定位失败' : '已定位目标' }}</span>
+            <span class="text-sm font-semibold">{{ locationLoading ? t('ui.locatingTarget') : locationError ? t('ui.failedToLocateTarget') : t('ui.targetLocated') }}</span>
             <div class="flex items-center gap-2">
               <Button
                 variant="outline"
                 size="sm"
                 @click="copyLocationId"
               >
-                复制 ID
+                {{ t('ui.copyId') }}
               </Button>
               <Button
                 v-if="locationError"
@@ -35,7 +35,7 @@
                 size="sm"
                 @click="retryLocation"
               >
-                重试定位
+                {{ t('ui.retryLocatingTarget') }}
               </Button>
             </div>
           </div>
@@ -54,18 +54,18 @@
             class="grid gap-2 text-sm sm:grid-cols-4"
           >
             <span>{{ ownerDisplayName(locationTarget.item.owner_name, locationTarget.item.owner_type) }}</span>
-            <span>充值余额 {{ formatCurrency(locationTarget.item.recharge_balance) }}</span>
-            <span>赠款余额 {{ formatCurrency(locationTarget.item.gift_balance) }}</span>
+            <span>{{ t('ui.topUpBalance') }} {{ formatCurrency(locationTarget.item.recharge_balance) }}</span>
+            <span>{{ t('ui.grantBalance') }} {{ formatCurrency(locationTarget.item.gift_balance) }}</span>
             <span>{{ walletStatusLabel(locationTarget.item.status) }}</span>
           </div>
           <div
             v-if="locationTarget?.kind === 'orders'"
             class="grid gap-2 text-sm sm:grid-cols-4"
           >
-            <span class="break-all">订单 {{ locationTarget.item.order_no }}</span>
+            <span class="break-all">{{ t('ui.order') }} {{ locationTarget.item.order_no }}</span>
             <span>{{ formatCurrency(locationTarget.item.amount_usd) }}</span>
             <span>{{ paymentStatusLabel(locationTarget.item.status) }}</span>
-            <span>退款及处理中占用 {{ formatCurrency(locationTarget.item.refunded_amount_usd) }}</span>
+            <span>{{ t('ui.refundsAndProcessingHolds') }} {{ formatCurrency(locationTarget.item.refunded_amount_usd) }}</span>
           </div>
           <Button
             v-if="locationTarget?.kind === 'refunds'"
@@ -73,7 +73,7 @@
             size="sm"
             @click="openRefundDrawer(locationTarget.item)"
           >
-            查看目标退款
+            {{ t('ui.viewTargetRefund') }}
           </Button>
           <Button
             v-if="locationTarget?.kind === 'ledger'"
@@ -81,28 +81,28 @@
             size="sm"
             @click="openLedgerDrawer(locationTarget.item)"
           >
-            查看目标流水
+            {{ t('ui.viewTargetTransaction') }}
           </Button>
           <p class="text-xs text-muted-foreground">
-            目标详情独立于分页；下方仍为全局列表。
+            {{ t('ui.targetDetailsAreIndependentOfPaginationTheGlobalListIs') }}
           </p>
         </div>
         <Tabs v-model="activeTab">
           <TabsList class="tabs-button-list grid w-full max-w-[960px] grid-cols-5">
             <TabsTrigger value="ledger">
-              资金流水
+              {{ t('ui.walletLedger') }}
             </TabsTrigger>
             <TabsTrigger value="orders">
-              充值订单
+              {{ t('ui.topUpOrder') }}
             </TabsTrigger>
             <TabsTrigger value="refunds">
-              退款审批
+              {{ t('ui.refundApprovals') }}
             </TabsTrigger>
             <TabsTrigger value="callbacks">
-              回调日志
+              {{ t('ui.callbackLogs') }}
             </TabsTrigger>
             <TabsTrigger value="redeem_codes">
-              兑换码
+              {{ t('ui.redeemCodeabbb615') }}
             </TabsTrigger>
           </TabsList>
 
@@ -114,34 +114,34 @@
               <div class="flex flex-wrap items-center gap-2">
                 <Select v-model="ledgerCategoryFilter">
                   <SelectTrigger class="w-[170px]">
-                    <SelectValue placeholder="一级分类" />
+                    <SelectValue :placeholder="t('ui.primaryCategory')" />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">
-                      全部分类
+                      {{ t('ui.allCategories') }}
                     </SelectItem>
                     <SelectItem value="recharge">
-                      充值
+                      {{ t('ui.topUp') }}
                     </SelectItem>
                     <SelectItem value="gift">
-                      赠款
+                      {{ t('ui.giftCredit') }}
                     </SelectItem>
                     <SelectItem value="adjust">
-                      调账
+                      {{ t('ui.adjustment') }}
                     </SelectItem>
                     <SelectItem value="refund">
-                      退款
+                      {{ t('ui.refundf1c91e1') }}
                     </SelectItem>
                   </SelectContent>
                 </Select>
 
                 <Select v-model="ledgerReasonFilter">
                   <SelectTrigger class="w-[180px]">
-                    <SelectValue placeholder="二级分类" />
+                    <SelectValue :placeholder="t('ui.secondaryCategory')" />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">
-                      全部二级
+                      {{ t('ui.allSecondaryCategories') }}
                     </SelectItem>
                     <SelectItem
                       v-for="option in ledgerReasonOptions"
@@ -155,17 +155,17 @@
 
                 <Select v-model="ledgerOwnerFilter">
                   <SelectTrigger class="w-[170px]">
-                    <SelectValue placeholder="归属类型" />
+                    <SelectValue :placeholder="t('ui.ownerType')" />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">
-                      全部归属
+                      {{ t('ui.allOwnership') }}
                     </SelectItem>
                     <SelectItem value="user">
-                      用户钱包
+                      {{ t('ui.userWallet') }}
                     </SelectItem>
                     <SelectItem value="api_key">
-                      独立密钥钱包
+                      {{ t('ui.standaloneKeyWallet') }}
                     </SelectItem>
                   </SelectContent>
                 </Select>
@@ -173,7 +173,7 @@
 
               <div class="flex items-center justify-between gap-3">
                 <div class="text-sm text-muted-foreground">
-                  共 {{ ledgerTotal }} 条
+                  {{ t('ui.total76e547a') }} {{ ledgerTotal }} {{ t('ui.itemsf004f1d') }}
                 </div>
                 <RefreshButton
                   :loading="loadingLedger"
@@ -187,14 +187,14 @@
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>时间</TableHead>
-                      <TableHead>归属</TableHead>
-                      <TableHead>类型</TableHead>
-                      <TableHead>金额</TableHead>
-                      <TableHead>余额变化</TableHead>
-                      <TableHead>说明</TableHead>
+                      <TableHead>{{ t('ui.time') }}</TableHead>
+                      <TableHead>{{ t('ui.owner1e9b3dc') }}</TableHead>
+                      <TableHead>{{ t('ui.typeba40014') }}</TableHead>
+                      <TableHead>{{ t('ui.amount') }}</TableHead>
+                      <TableHead>{{ t('ui.balanceChanges') }}</TableHead>
+                      <TableHead>{{ t('ui.description') }}</TableHead>
                       <TableHead class="text-right">
-                        操作
+                        {{ t('ui.actionsed31fbb') }}
                       </TableHead>
                     </TableRow>
                   </TableHeader>
@@ -244,8 +244,7 @@
                           v-if="tx.recharge_balance_before !== null && tx.recharge_balance_before !== undefined && tx.gift_balance_before !== null && tx.gift_balance_before !== undefined"
                           class="text-[11px] text-muted-foreground mt-0.5"
                         >
-                          充 {{ Number(tx.recharge_balance_before).toFixed(4) }}→{{ Number(tx.recharge_balance_after ?? 0).toFixed(4) }}
-                          · 赠 {{ Number(tx.gift_balance_before).toFixed(4) }}→{{ Number(tx.gift_balance_after ?? 0).toFixed(4) }}
+                          {{ t('ui.paid') }} {{ Number(tx.recharge_balance_before).toFixed(4) }}→{{ Number(tx.recharge_balance_after ?? 0).toFixed(4) }} {{ t('ui.gift') }} {{ Number(tx.gift_balance_before).toFixed(4) }}→{{ Number(tx.gift_balance_after ?? 0).toFixed(4) }}
                         </div>
                       </TableCell>
                       <TableCell class="text-xs text-muted-foreground max-w-[280px] truncate">
@@ -257,7 +256,7 @@
                           variant="outline"
                           @click="openLedgerDrawer(tx)"
                         >
-                          详情
+                          {{ t('ui.details') }}
                         </Button>
                       </TableCell>
                     </TableRow>
@@ -267,8 +266,8 @@
                         class="py-12"
                       >
                         <EmptyState
-                          title="暂无资金流水"
-                          description="当前筛选条件下没有资金动作记录"
+                          :title="t('ui.noWalletLedgerEntries')"
+                          :description="t('ui.noWalletTransactionsMatchTheCurrentFilters')"
                         />
                       </TableCell>
                     </TableRow>
@@ -294,40 +293,40 @@
               <div class="flex flex-wrap items-center gap-2">
                 <Select v-model="refundStatusFilter">
                   <SelectTrigger class="w-[170px]">
-                    <SelectValue placeholder="退款状态" />
+                    <SelectValue :placeholder="t('ui.refundStatus')" />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">
-                      全部状态
+                      {{ t('ui.allStatuses') }}
                     </SelectItem>
                     <SelectItem value="pending_approval">
-                      待审批
+                      {{ t('ui.pendingApproval') }}
                     </SelectItem>
                     <SelectItem value="approved">
-                      已审批
+                      {{ t('ui.approved') }}
                     </SelectItem>
                     <SelectItem value="processing">
-                      处理中
+                      {{ t('ui.processing694b71b') }}
                     </SelectItem>
                     <SelectItem value="succeeded">
-                      已完成
+                      {{ t('site.home.status.completed') }}
                     </SelectItem>
                     <SelectItem value="failed">
-                      已失败
+                      {{ t('ui.failed7e9ef4d') }}
                     </SelectItem>
                   </SelectContent>
                 </Select>
 
                 <Select v-model="refundOwnerFilter">
                   <SelectTrigger class="w-[170px]">
-                    <SelectValue placeholder="归属类型" />
+                    <SelectValue :placeholder="t('ui.ownerType')" />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">
-                      全部归属
+                      {{ t('ui.allOwnership') }}
                     </SelectItem>
                     <SelectItem value="user">
-                      用户钱包
+                      {{ t('ui.userWallet') }}
                     </SelectItem>
                   </SelectContent>
                 </Select>
@@ -335,7 +334,7 @@
 
               <div class="flex items-center justify-between gap-3">
                 <div class="text-sm text-muted-foreground">
-                  共 {{ refundTotal }} 条
+                  {{ t('ui.total76e547a') }} {{ refundTotal }} {{ t('ui.itemsf004f1d') }}
                 </div>
                 <RefreshButton
                   :loading="loadingRefunds"
@@ -349,15 +348,15 @@
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>归属</TableHead>
-                      <TableHead>退款单号</TableHead>
-                      <TableHead>金额</TableHead>
-                      <TableHead>模式</TableHead>
-                      <TableHead>状态</TableHead>
-                      <TableHead>原因</TableHead>
-                      <TableHead>申请时间</TableHead>
+                      <TableHead>{{ t('ui.owner1e9b3dc') }}</TableHead>
+                      <TableHead>{{ t('ui.refundId') }}</TableHead>
+                      <TableHead>{{ t('ui.amount') }}</TableHead>
+                      <TableHead>{{ t('ui.mode') }}</TableHead>
+                      <TableHead>{{ t('ui.status6320b4a') }}</TableHead>
+                      <TableHead>{{ t('ui.reasonf029d9c') }}</TableHead>
+                      <TableHead>{{ t('ui.requestedAt') }}</TableHead>
                       <TableHead class="text-right">
-                        操作
+                        {{ t('ui.actionsed31fbb') }}
                       </TableHead>
                     </TableRow>
                   </TableHeader>
@@ -409,7 +408,7 @@
                             variant="outline"
                             @click="openRefundDrawer(refund)"
                           >
-                            审批
+                            {{ t('ui.approve') }}
                           </Button>
                         </div>
                       </TableCell>
@@ -420,8 +419,8 @@
                         class="py-12"
                       >
                         <EmptyState
-                          title="暂无退款申请"
-                          description="当前筛选条件下没有退款单"
+                          :title="t('ui.noRefundRequests')"
+                          :description="t('ui.noRefundsMatchTheSelectedFilters')"
                         />
                       </TableCell>
                     </TableRow>
@@ -446,55 +445,55 @@
             <div class="flex flex-wrap items-center gap-2">
               <Select v-model="orderStatusFilter">
                 <SelectTrigger class="w-[180px]">
-                  <SelectValue placeholder="订单状态" />
+                  <SelectValue :placeholder="t('ui.orderStatus')" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">
-                    全部状态
+                    {{ t('ui.allStatuses') }}
                   </SelectItem>
                   <SelectItem value="pending">
-                    待支付
+                    {{ t('ui.awaitingPayment') }}
                   </SelectItem>
                   <SelectItem value="paid">
-                    已支付
+                    {{ t('ui.paid0a52f8a') }}
                   </SelectItem>
                   <SelectItem value="credited">
-                    已到账
+                    {{ t('ui.credited') }}
                   </SelectItem>
                   <SelectItem value="failed">
-                    支付失败
+                    {{ t('ui.paymentFailed') }}
                   </SelectItem>
                   <SelectItem value="expired">
-                    已过期
+                    {{ t('ui.expired') }}
                   </SelectItem>
                 </SelectContent>
               </Select>
 
               <Select v-model="orderMethodFilter">
                 <SelectTrigger class="w-[180px]">
-                  <SelectValue placeholder="支付方式" />
+                  <SelectValue :placeholder="t('ui.paymentMethod')" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">
-                    全部方式
+                    {{ t('ui.allMethods') }}
                   </SelectItem>
                   <SelectItem value="alipay">
-                    支付宝
+                    {{ t('ui.alipay') }}
                   </SelectItem>
                   <SelectItem value="wechat">
-                    微信支付
+                    {{ t('ui.wechatPay') }}
                   </SelectItem>
                   <SelectItem value="admin_manual">
-                    人工充值
+                    {{ t('ui.manualTopUp') }}
                   </SelectItem>
                   <SelectItem value="card_code">
-                    充值卡
+                    {{ t('ui.topUpCard') }}
                   </SelectItem>
                   <SelectItem value="gift_code">
-                    礼品卡
+                    {{ t('ui.giftCard') }}
                   </SelectItem>
                   <SelectItem value="card_recharge">
-                    卡密充值
+                    {{ t('ui.codeTopUp') }}
                   </SelectItem>
                 </SelectContent>
               </Select>
@@ -510,14 +509,14 @@
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>订单号</TableHead>
-                      <TableHead>钱包名称</TableHead>
-                      <TableHead>金额</TableHead>
-                      <TableHead>支付方式</TableHead>
-                      <TableHead>状态</TableHead>
-                      <TableHead>创建时间</TableHead>
+                      <TableHead>{{ t('ui.orderNumber') }}</TableHead>
+                      <TableHead>{{ t('ui.walletName') }}</TableHead>
+                      <TableHead>{{ t('ui.amount') }}</TableHead>
+                      <TableHead>{{ t('ui.paymentMethod') }}</TableHead>
+                      <TableHead>{{ t('ui.status6320b4a') }}</TableHead>
+                      <TableHead>{{ t('ui.createdAt') }}</TableHead>
                       <TableHead class="text-right">
-                        操作
+                        {{ t('ui.actionsed31fbb') }}
                       </TableHead>
                     </TableRow>
                   </TableHeader>
@@ -556,7 +555,7 @@
                             size="sm"
                             @click="openCreditDialog(order)"
                           >
-                            到账
+                            {{ t('ui.credit') }}
                           </Button>
                           <Button
                             v-if="canExpireOrder(order.status)"
@@ -565,7 +564,7 @@
                             :disabled="submittingOrderAction"
                             @click="expireOrder(order.id)"
                           >
-                            过期
+                            {{ t('ui.expired97399bd') }}
                           </Button>
                           <Button
                             v-if="canFailOrder(order.status)"
@@ -574,7 +573,7 @@
                             :disabled="submittingOrderAction"
                             @click="failOrder(order.id)"
                           >
-                            失败
+                            {{ t('ui.failed28384d7') }}
                           </Button>
                         </div>
                       </TableCell>
@@ -585,8 +584,8 @@
                         class="py-10"
                       >
                         <EmptyState
-                          title="暂无支付订单"
-                          description="当前筛选条件下没有数据"
+                          :title="t('ui.noPaymentOrders')"
+                          :description="t('ui.noDataUnderTheCurrentFilters')"
                         />
                       </TableCell>
                     </TableRow>
@@ -611,17 +610,17 @@
             <div class="flex items-center gap-2">
               <Select v-model="callbackMethodFilter">
                 <SelectTrigger class="w-[180px]">
-                  <SelectValue placeholder="支付方式" />
+                  <SelectValue :placeholder="t('ui.paymentMethod')" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">
-                    全部方式
+                    {{ t('ui.allMethods') }}
                   </SelectItem>
                   <SelectItem value="alipay">
-                    支付宝
+                    {{ t('ui.alipay') }}
                   </SelectItem>
                   <SelectItem value="wechat">
-                    微信支付
+                    {{ t('ui.wechatPay') }}
                   </SelectItem>
                 </SelectContent>
               </Select>
@@ -636,12 +635,12 @@
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>回调键</TableHead>
-                      <TableHead>订单号</TableHead>
-                      <TableHead>方式</TableHead>
-                      <TableHead>验签</TableHead>
-                      <TableHead>状态</TableHead>
-                      <TableHead>时间</TableHead>
+                      <TableHead>{{ t('ui.callbackKey') }}</TableHead>
+                      <TableHead>{{ t('ui.orderNumber') }}</TableHead>
+                      <TableHead>{{ t('ui.method') }}</TableHead>
+                      <TableHead>{{ t('ui.signatureVerification') }}</TableHead>
+                      <TableHead>{{ t('ui.status6320b4a') }}</TableHead>
+                      <TableHead>{{ t('ui.time') }}</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -658,7 +657,7 @@
                       <TableCell>{{ paymentMethodLabel(callback.payment_method) }}</TableCell>
                       <TableCell>
                         <Badge :variant="callback.signature_valid ? 'success' : 'destructive'">
-                          {{ callback.signature_valid ? '通过' : '失败' }}
+                          {{ callback.signature_valid ? t('ui.passed') : t('ui.failed28384d7') }}
                         </Badge>
                       </TableCell>
                       <TableCell>
@@ -676,8 +675,8 @@
                         class="py-10"
                       >
                         <EmptyState
-                          title="暂无回调日志"
-                          description="当前筛选条件下没有数据"
+                          :title="t('ui.noCallbackLogs')"
+                          :description="t('ui.noDataUnderTheCurrentFilters')"
                         />
                       </TableCell>
                     </TableRow>
@@ -737,6 +736,9 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+const { t } = useI18n()
+
 import RefundReferralReview from '@/features/wallet/components/RefundReferralReview.vue'
 import WalletLedgerDetailDrawer from '@/features/wallet/components/WalletLedgerDetailDrawer.vue'
 import WalletRefundReviewDrawer from '@/features/wallet/components/WalletRefundReviewDrawer.vue'
@@ -820,16 +822,16 @@ const referralReview = ref<InstanceType<typeof RefundReferralReview> | null>(nul
 const redeemCodesTab = ref<InstanceType<typeof WalletRedeemCodesTab> | null>(null)
 
 const LEDGER_REASON_OPTIONS: LedgerReasonOption[] = [
-  { value: 'topup_admin_manual', label: '人工充值', category: 'recharge' },
-  { value: 'topup_gateway', label: '支付充值', category: 'recharge' },
-  { value: 'topup_card_code', label: '卡密充值', category: 'recharge' },
-  { value: 'gift_initial', label: '初始赠款', category: 'gift' },
-  { value: 'gift_campaign', label: '活动赠款', category: 'gift' },
-  { value: 'gift_expire_reclaim', label: '赠款回收', category: 'gift' },
-  { value: 'adjust_admin', label: '人工调账', category: 'adjust' },
-  { value: 'adjust_system', label: '系统调账', category: 'adjust' },
-  { value: 'refund_out', label: '退款扣减', category: 'refund' },
-  { value: 'refund_revert', label: '退款回补', category: 'refund' },
+  { value: 'topup_admin_manual', get label() { return t('ui.manualTopUp') }, category: 'recharge' },
+  { value: 'topup_gateway', get label() { return t('ui.paymentTopUp') }, category: 'recharge' },
+  { value: 'topup_card_code', get label() { return t('ui.codeTopUp') }, category: 'recharge' },
+  { value: 'gift_initial', get label() { return t('ui.initialGiftCredit') }, category: 'gift' },
+  { value: 'gift_campaign', get label() { return t('ui.promotionalGiftCredit') }, category: 'gift' },
+  { value: 'gift_expire_reclaim', get label() { return t('ui.giftCreditReversal') }, category: 'gift' },
+  { value: 'adjust_admin', get label() { return t('ui.manualAdjustment') }, category: 'adjust' },
+  { value: 'adjust_system', get label() { return t('ui.systemAdjustment') }, category: 'adjust' },
+  { value: 'refund_out', get label() { return t('ui.refundDebit') }, category: 'refund' },
+  { value: 'refund_revert', get label() { return t('ui.refundRecredit') }, category: 'refund' },
 ]
 
 const { success, error: showError } = useToast()
@@ -993,7 +995,7 @@ async function loadWalletMetaMap() {
     walletMetaMap.value = wallets.reduce<Record<string, { ownerName: string; ownerType: 'user' | 'api_key' }>>(
       (acc, wallet) => {
         const ownerName =
-          wallet.owner_name || (wallet.owner_type === 'user' ? '未命名用户' : '未命名密钥')
+          wallet.owner_name || (wallet.owner_type === 'user' ? t('ui.unnamedUser') : t('ui.unnamedKey'))
         acc[wallet.id] = {
           ownerName,
           ownerType: wallet.owner_type,
@@ -1091,13 +1093,13 @@ async function loadCallbacks() {
 }
 
 function orderWalletName(walletId: string) {
-  return walletMetaMap.value[walletId]?.ownerName || '未知钱包'
+  return walletMetaMap.value[walletId]?.ownerName || t('ui.unknownWallet')
 }
 
 function orderWalletTypeLabel(walletId: string) {
   const ownerType = walletMetaMap.value[walletId]?.ownerType
-  if (!ownerType) return '未知归属'
-  return ownerType === 'user' ? '用户钱包' : '独立密钥钱包'
+  if (!ownerType) return t('ui.unknownOwner')
+  return ownerType === 'user' ? t('ui.userWallet') : t('ui.standaloneKeyWallet')
 }
 
 function openLedgerDrawer(tx: AdminLedgerTransaction) {
@@ -1145,7 +1147,7 @@ async function processRefund(refund: AdminGlobalRefund) {
     if (review?.decision !== 'approve') return
     const response = await adminWalletApi.processRefund(walletId, refundId, { referral_shortfall_confirmation: review.token })
     applyRefundUpdate(refundId, response.refund)
-    success('退款已进入 processing')
+    success(t('ui.refundIsNowProcessing'))
     await Promise.all([loadRefunds(), loadLedger()])
     syncCurrentRefund(refundId)
   } catch (error) {
@@ -1159,7 +1161,7 @@ async function processRefund(refund: AdminGlobalRefund) {
 async function submitFailRefund(reason: string) {
   if (!currentRefund.value) return
   if (!reason) {
-    showError('请填写驳回原因')
+    showError(t('ui.enterAReasonForRejection'))
     return
   }
 
@@ -1171,7 +1173,7 @@ async function submitFailRefund(reason: string) {
       reason,
     })
     applyRefundUpdate(refundId, response.refund)
-    success('退款已驳回')
+    success(t('ui.refundRejected'))
     await Promise.all([loadRefunds(), loadLedger()])
     syncCurrentRefund(refundId)
   } catch (error) {
@@ -1200,7 +1202,7 @@ async function submitCompleteRefund(payload: WalletRefundCompletePayload) {
     applyRefundUpdate(refundId, response.refund)
     success(response.referral_reversal
       ? `退款已完成；该订单累计冲回 $${response.referral_reversal.reversed_amount_usd.toFixed(2)}，当前待冲回 $${response.referral_reversal.pending_reversal_amount_usd.toFixed(2)}`
-      : '退款已完成')
+      : t('ui.refundCompleted'))
     await Promise.all([loadRefunds(), loadLedger()])
     syncCurrentRefund(refundId)
   } catch (error) {
@@ -1221,7 +1223,7 @@ async function submitCreditOrder(payload: WalletOrderCreditPayload) {
   submittingOrderAction.value = true
   try {
     await adminPaymentsApi.creditOrder(currentOrder.value.id, payload)
-    success('订单已手动到账')
+    success(t('ui.orderCreditedManually'))
     showCreditDialog.value = false
     await Promise.all([loadOrders(), loadLedger(), loadWalletMetaMap()])
   } catch (error) {
@@ -1236,7 +1238,7 @@ async function expireOrder(orderId: string) {
   submittingOrderAction.value = true
   try {
     await adminPaymentsApi.expireOrder(orderId)
-    success('订单已标记过期')
+    success(t('ui.orderMarkedAsExpired'))
     await loadOrders()
   } catch (error) {
     log.error('标记过期失败:', error)
@@ -1250,7 +1252,7 @@ async function failOrder(orderId: string) {
   submittingOrderAction.value = true
   try {
     await adminPaymentsApi.failOrder(orderId)
-    success('订单已标记失败')
+    success(t('ui.orderMarkedAsFailed'))
     await loadOrders()
   } catch (error) {
     log.error('标记失败失败:', error)

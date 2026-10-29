@@ -16,12 +16,12 @@
                 :variant="model.is_active ? 'default' : 'secondary'"
                 class="text-xs"
               >
-                {{ model.is_active ? '可用' : '停用' }}
+                {{ model.is_active ? t('ui.available4d99c97') : t('ui.disable4e6fd0e') }}
               </Badge>
               <span class="text-sm text-muted-foreground font-mono">{{ model.name }}</span>
               <button
                 class="p-0.5 rounded hover:bg-muted transition-colors"
-                title="复制模型 ID"
+                :title="t('ui.copyModelId')"
                 @click="copyToClipboard(model.name)"
               >
                 <Copy class="w-3 h-3 text-muted-foreground" />
@@ -37,7 +37,7 @@
           <Button
             variant="ghost"
             size="icon"
-            title="关闭"
+            :title="t('ui.close')"
             @click="handleClose"
           >
             <X class="w-4 h-4" />
@@ -49,7 +49,7 @@
         <!-- 模型能力 -->
         <div class="space-y-3">
           <h4 class="font-semibold text-sm">
-            模型能力
+            {{ t('ui.modelCapabilities') }}
           </h4>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div class="flex items-center gap-2 p-3 rounded-lg border">
@@ -59,14 +59,14 @@
                   Streaming
                 </p>
                 <p class="text-xs text-muted-foreground">
-                  流式输出
+                  {{ t('ui.streaming') }}
                 </p>
               </div>
               <Badge
                 :variant="model.config?.streaming !== false ? 'default' : 'secondary'"
                 class="text-xs"
               >
-                {{ model.config?.streaming !== false ? '支持' : '不支持' }}
+                {{ model.config?.streaming !== false ? t('ui.supported') : t('ui.notSupported') }}
               </Badge>
             </div>
             <div class="flex items-center gap-2 p-3 rounded-lg border">
@@ -76,14 +76,14 @@
                   Image Generation
                 </p>
                 <p class="text-xs text-muted-foreground">
-                  图像生成
+                  {{ t('ui.imageGeneration') }}
                 </p>
               </div>
               <Badge
                 :variant="model.config?.image_generation === true ? 'default' : 'secondary'"
                 class="text-xs"
               >
-                {{ model.config?.image_generation === true ? '支持' : '不支持' }}
+                {{ model.config?.image_generation === true ? t('ui.supported') : t('ui.notSupported') }}
               </Badge>
             </div>
             <div class="flex items-center gap-2 p-3 rounded-lg border">
@@ -93,14 +93,14 @@
                   Embedding
                 </p>
                 <p class="text-xs text-muted-foreground">
-                  向量嵌入
+                  {{ t('ui.embeddings') }}
                 </p>
               </div>
               <Badge
                 :variant="supportsEmbedding(model) ? 'default' : 'secondary'"
                 class="text-xs"
               >
-                {{ supportsEmbedding(model) ? '支持' : '不支持' }}
+                {{ supportsEmbedding(model) ? t('ui.supported') : t('ui.notSupported') }}
               </Badge>
             </div>
             <div class="flex items-center gap-2 p-3 rounded-lg border">
@@ -110,14 +110,14 @@
                   Vision
                 </p>
                 <p class="text-xs text-muted-foreground">
-                  视觉理解
+                  {{ t('ui.vision') }}
                 </p>
               </div>
               <Badge
                 :variant="model.config?.vision === true ? 'default' : 'secondary'"
                 class="text-xs"
               >
-                {{ model.config?.vision === true ? '支持' : '不支持' }}
+                {{ model.config?.vision === true ? t('ui.supported') : t('ui.notSupported') }}
               </Badge>
             </div>
             <div class="flex items-center gap-2 p-3 rounded-lg border">
@@ -127,14 +127,14 @@
                   Tool Use
                 </p>
                 <p class="text-xs text-muted-foreground">
-                  工具调用
+                  {{ t('ui.toolCalling') }}
                 </p>
               </div>
               <Badge
                 :variant="model.config?.function_calling === true ? 'default' : 'secondary'"
                 class="text-xs"
               >
-                {{ model.config?.function_calling === true ? '支持' : '不支持' }}
+                {{ model.config?.function_calling === true ? t('ui.supported') : t('ui.notSupported') }}
               </Badge>
             </div>
             <div class="flex items-center gap-2 p-3 rounded-lg border">
@@ -144,14 +144,14 @@
                   Extended Thinking
                 </p>
                 <p class="text-xs text-muted-foreground">
-                  深度思考
+                  {{ t('ui.reasoning') }}
                 </p>
               </div>
               <Badge
                 :variant="model.config?.extended_thinking === true ? 'default' : 'secondary'"
                 class="text-xs"
               >
-                {{ model.config?.extended_thinking === true ? '支持' : '不支持' }}
+                {{ model.config?.extended_thinking === true ? t('ui.supported') : t('ui.notSupported') }}
               </Badge>
             </div>
           </div>
@@ -160,7 +160,7 @@
         <!-- 定价信息 -->
         <div class="space-y-3">
           <h4 class="font-semibold text-sm">
-            定价信息
+            {{ t('ui.pricing') }}
           </h4>
 
           <ProcessingTierPricingSummary :pricing="model.default_tiered_pricing" />
@@ -172,25 +172,25 @@
           >
             <div class="grid grid-cols-2 gap-3">
               <div class="p-3 rounded-lg border">
-                <Label class="text-xs text-muted-foreground">输入价格 ($/M)</Label>
+                <Label class="text-xs text-muted-foreground">{{ t('ui.inputPriceM') }}</Label>
                 <p class="text-lg font-semibold mt-1">
                   {{ getFirstTierPrice(model.default_tiered_pricing, 'input_price_per_1m') }}
                 </p>
               </div>
               <div class="p-3 rounded-lg border">
-                <Label class="text-xs text-muted-foreground">输出价格 ($/M)</Label>
+                <Label class="text-xs text-muted-foreground">{{ t('ui.outputPriceM') }}</Label>
                 <p class="text-lg font-semibold mt-1">
                   {{ getFirstTierPrice(model.default_tiered_pricing, 'output_price_per_1m') }}
                 </p>
               </div>
               <div class="p-3 rounded-lg border">
-                <Label class="text-xs text-muted-foreground">缓存创建 ($/M)</Label>
+                <Label class="text-xs text-muted-foreground">{{ t('ui.cacheWriteM') }}</Label>
                 <p class="text-sm font-mono mt-1">
                   {{ getFirstTierPrice(model.default_tiered_pricing, 'cache_creation_price_per_1m') }}
                 </p>
               </div>
               <div class="p-3 rounded-lg border">
-                <Label class="text-xs text-muted-foreground">缓存读取 ($/M)</Label>
+                <Label class="text-xs text-muted-foreground">{{ t('ui.cacheReadM') }}</Label>
                 <p class="text-sm font-mono mt-1">
                   {{ getFirstTierPrice(model.default_tiered_pricing, 'cache_read_price_per_1m') }}
                 </p>
@@ -201,7 +201,7 @@
               v-if="getFirst1hCachePrice(model.default_tiered_pricing) !== '-'"
               class="flex items-center gap-3 p-3 rounded-lg border bg-muted/20"
             >
-              <Label class="text-xs text-muted-foreground whitespace-nowrap">1h 缓存</Label>
+              <Label class="text-xs text-muted-foreground whitespace-nowrap">{{ t('ui.1hCache') }}</Label>
               <span class="text-sm font-mono">{{ getFirst1hCachePrice(model.default_tiered_pricing) }}</span>
             </div>
             <!-- 按次计费 -->
@@ -209,8 +209,8 @@
               v-if="model.default_price_per_request && model.default_price_per_request > 0"
               class="flex items-center gap-3 p-3 rounded-lg border bg-muted/20"
             >
-              <Label class="text-xs text-muted-foreground whitespace-nowrap">按次计费</Label>
-              <span class="text-sm font-mono">${{ model.default_price_per_request.toFixed(3) }}/次</span>
+              <Label class="text-xs text-muted-foreground whitespace-nowrap">{{ t('ui.perRequestBilling') }}</Label>
+              <span class="text-sm font-mono">${{ model.default_price_per_request.toFixed(3) }}{{ t('ui.requestad9c0d7') }}</span>
             </div>
           </div>
 
@@ -221,7 +221,7 @@
           >
             <div class="flex items-center gap-2 text-sm text-muted-foreground">
               <Layers class="w-4 h-4" />
-              <span>阶梯计费 ({{ getTierCount(model.default_tiered_pricing) }} 档)</span>
+              <span>{{ t('ui.tieredPricing5233988') }}{{ getTierCount(model.default_tiered_pricing) }} {{ t('ui.tiers') }}</span>
             </div>
 
             <!-- 阶梯价格表格 -->
@@ -230,22 +230,22 @@
                 <TableHeader>
                   <TableRow class="bg-muted/30">
                     <TableHead class="text-xs h-9">
-                      阶梯
+                      {{ t('ui.tier') }}
                     </TableHead>
                     <TableHead class="text-xs h-9 text-right">
-                      输入 ($/M)
+                      {{ t('ui.inputM') }}
                     </TableHead>
                     <TableHead class="text-xs h-9 text-right">
-                      输出 ($/M)
+                      {{ t('ui.outputM') }}
                     </TableHead>
                     <TableHead class="text-xs h-9 text-right">
-                      缓存创建
+                      {{ t('ui.cacheCreation') }}
                     </TableHead>
                     <TableHead class="text-xs h-9 text-right">
-                      缓存读取
+                      {{ t('ui.cacheRead1ded655') }}
                     </TableHead>
                     <TableHead class="text-xs h-9 text-right">
-                      1h 缓存
+                      {{ t('ui.1hCache') }}
                     </TableHead>
                   </TableRow>
                 </TableHeader>
@@ -260,7 +260,7 @@
                         v-if="tier.up_to === null"
                         class="text-muted-foreground"
                       >
-                        {{ index === 0 ? '所有' : `> ${formatTierLimit((model.default_tiered_pricing?.tiers || [])[index - 1]?.up_to)}` }}
+                        {{ index === 0 ? t('ui.all') : `> ${formatTierLimit((model.default_tiered_pricing?.tiers || [])[index - 1]?.up_to)}` }}
                       </span>
                       <span v-else>
                         {{ index === 0 ? '0' : formatTierLimit((model.default_tiered_pricing?.tiers || [])[index - 1]?.up_to) }} - {{ formatTierLimit(tier.up_to) }}
@@ -291,8 +291,8 @@
               v-if="model.default_price_per_request && model.default_price_per_request > 0"
               class="flex items-center gap-3 p-3 rounded-lg border bg-muted/20"
             >
-              <Label class="text-xs text-muted-foreground whitespace-nowrap">按次计费</Label>
-              <span class="text-sm font-mono">${{ model.default_price_per_request.toFixed(3) }}/次</span>
+              <Label class="text-xs text-muted-foreground whitespace-nowrap">{{ t('ui.perRequestBilling') }}</Label>
+              <span class="text-sm font-mono">${{ model.default_price_per_request.toFixed(3) }}{{ t('ui.requestad9c0d7') }}</span>
             </div>
           </div>
         </div>
@@ -302,6 +302,8 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+
 import {
   X,
   Eye,
@@ -335,6 +337,8 @@ defineProps<Props>()
 const emit = defineEmits<{
   'update:open': [value: boolean]
 }>()
+
+const { t } = useI18n()
 
 const { copyToClipboard } = useClipboard()
 

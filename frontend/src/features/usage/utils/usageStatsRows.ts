@@ -1,3 +1,4 @@
+import { translate } from '@/i18n'
 import { formatApiFormat } from '@/api/endpoints/types/api-format'
 import type { ApiFormatStatsItem, EnhancedModelStatsItem, ProviderStatsItem } from '../types'
 
@@ -27,16 +28,16 @@ export interface UsageStatsRow {
 }
 
 export const MODEL_STATS_COLUMNS: UsageStatsExtraColumn[] = [
-  { key: 'efficiency', header: '效率', muted: true },
+  { key: 'efficiency', get header() { return translate('ui.efficiency') }, muted: true },
 ]
 
 export const PROVIDER_STATS_COLUMNS: UsageStatsExtraColumn[] = [
-  { key: 'successRate', header: '成功率' },
-  { key: 'avgResponseTime', header: '平均响应', muted: true },
+  { key: 'successRate', get header() { return translate('ui.successRate') } },
+  { key: 'avgResponseTime', get header() { return translate('ui.averageResponse') }, muted: true },
 ]
 
 export const API_FORMAT_STATS_COLUMNS: UsageStatsExtraColumn[] = [
-  { key: 'avgResponseTime', header: '平均响应', muted: true },
+  { key: 'avgResponseTime', get header() { return translate('ui.averageResponse') }, muted: true },
 ]
 
 export function modelStatsRows(items: EnhancedModelStatsItem[]): UsageStatsRow[] {

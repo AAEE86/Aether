@@ -1,6 +1,6 @@
 <template>
   <div class="space-y-6 pb-8">
-    <TableCard title="独立余额 API Keys">
+    <TableCard :title="t('ui.standaloneBalanceApiKeys')">
       <template #actions>
         <!-- 搜索框 -->
         <div class="relative">
@@ -8,7 +8,7 @@
           <Input
             v-model="searchQuery"
             type="text"
-            placeholder="搜索..."
+            :placeholder="t('ui.searchc304ad3')"
             class="h-8 w-28 sm:w-40 pl-8 pr-2 text-xs"
           />
         </div>
@@ -22,7 +22,7 @@
             v-model="filterStatus"
           >
             <SelectTrigger class="w-20 sm:w-28 h-8 text-xs border-border/60">
-              <SelectValue placeholder="全部状态" />
+              <SelectValue :placeholder="t('ui.allStatuses')" />
             </SelectTrigger>
             <SelectContent>
               <SelectItem
@@ -42,7 +42,7 @@
             v-model="filterBalance"
           >
             <SelectTrigger class="w-20 sm:w-28 h-8 text-xs border-border/60">
-              <SelectValue placeholder="全部类型" />
+              <SelectValue :placeholder="t('ui.allTypes')" />
             </SelectTrigger>
             <SelectContent>
               <SelectItem
@@ -64,7 +64,7 @@
           variant="ghost"
           size="icon"
           class="h-8 w-8"
-          title="创建独立 Key"
+          :title="t('ui.createStandaloneKey')"
           @click="openCreateDialog"
         >
           <Plus class="w-3.5 h-3.5" />
@@ -80,7 +80,7 @@
       <!-- 加载状态 -->
       <LoadingState
         v-if="loading"
-        message="加载中..."
+        :message="t('common.loading')"
         size="lg"
       />
 
@@ -90,18 +90,17 @@
             <TableHeader>
               <TableRow class="border-b border-border/60 hover:bg-transparent">
                 <TableHead class="w-[200px] h-12 font-semibold">
-                  密钥信息
+                  {{ t('ui.keyDetails') }}
                 </TableHead>
                 <SortableTableHead
                   class="w-[240px] h-12 font-semibold"
                   column-key="balance"
                   :sortable="false"
                   :filter-active="filterBalance !== 'all'"
-                  filter-title="筛选余额类型"
+                  :filter-title="t('ui.filterBalanceType')"
                   filter-content-class="w-40 p-1 rounded-2xl border-border bg-card text-foreground shadow-2xl backdrop-blur-xl"
                 >
-                  钱包
-                  <template #filter="{ close }">
+                  {{ t('ui.wallet') }} <template #filter="{ close }">
                     <TableFilterMenu
                       v-model="filterBalance"
                       :options="balanceFilters"
@@ -110,27 +109,26 @@
                   </template>
                 </SortableTableHead>
                 <TableHead class="w-[190px] h-12 font-semibold">
-                  统计/限制
+                  {{ t('ui.usageLimits') }}
                 </TableHead>
                 <TableHead class="w-[140px] h-12 font-semibold">
-                  创建时间
+                  {{ t('ui.createdAt') }}
                 </TableHead>
                 <TableHead class="w-[110px] h-12 font-semibold">
-                  有效期
+                  {{ t('ui.validity') }}
                 </TableHead>
                 <TableHead class="w-[140px] h-12 font-semibold">
-                  最近使用
+                  {{ t('ui.lastUsed39a9046') }}
                 </TableHead>
                 <SortableTableHead
                   class="w-[100px] h-12 font-semibold"
                   column-key="status"
                   :sortable="false"
                   :filter-active="filterStatus !== 'all'"
-                  filter-title="筛选状态"
+                  :filter-title="t('ui.filterStatus')"
                   filter-content-class="w-40 p-1 rounded-2xl border-border bg-card text-foreground shadow-2xl backdrop-blur-xl"
                 >
-                  状态
-                  <template #filter="{ close }">
+                  {{ t('ui.status6320b4a') }} <template #filter="{ close }">
                     <TableFilterMenu
                       v-model="filterStatus"
                       :options="statusFilters"
@@ -139,7 +137,7 @@
                   </template>
                 </SortableTableHead>
                 <TableHead class="w-[130px] h-12 font-semibold text-center">
-                  操作
+                  {{ t('ui.actionsed31fbb') }}
                 </TableHead>
               </TableRow>
             </TableHeader>
@@ -152,8 +150,8 @@
                   <EmptyState
                     :type="hasActiveFilters ? 'filter' : 'empty'"
                     :icon="hasActiveFilters ? undefined : Key"
-                    :title="hasActiveFilters ? '未找到匹配的 Key' : '暂无独立余额 Key'"
-                    :description="hasActiveFilters ? '尝试调整筛选条件' : '点击右上角按钮创建独立余额 Key'"
+                    :title="hasActiveFilters ? t('ui.noMatchingKeys7d94d1b') : t('ui.noStandaloneBalanceKeys')"
+                    :description="hasActiveFilters ? t('ui.tryAdjustingFilters') : t('ui.createAStandaloneBalanceKeyToGetStarted')"
                     :action-text="hasActiveFilters ? '清除筛选' : undefined"
                     action-variant="outline"
                     action-size="sm"
@@ -171,9 +169,9 @@
                   <div class="space-y-1">
                     <div
                       class="text-sm font-medium text-foreground truncate"
-                      :title="apiKey.name || '未命名 Key'"
+                      :title="apiKey.name || t('ui.untitledKey')"
                     >
-                      {{ apiKey.name || '未命名 Key' }}
+                      {{ apiKey.name || t('ui.untitledKey') }}
                     </div>
                     <div class="flex items-center gap-1.5">
                       <code class="text-xs font-mono text-muted-foreground">
@@ -183,7 +181,7 @@
                         variant="ghost"
                         size="icon"
                         class="h-6 w-6"
-                        title="复制完整密钥"
+                        :title="t('ui.copyFullKey')"
                         @click="copyKeyPrefix(apiKey)"
                       >
                         <Copy class="h-3 w-3" />
@@ -194,13 +192,13 @@
                 <TableCell class="py-4">
                   <div class="space-y-1.5">
                     <div class="flex items-center gap-1 text-[11px] text-muted-foreground">
-                      <span>余额：</span>
+                      <span>{{ t('ui.balance17f82df') }}</span>
                       <Badge
                         v-if="isApiKeyUnlimited(apiKey)"
                         variant="secondary"
                         class="h-5 px-1.5 py-0 text-[10px] font-medium"
                       >
-                        无限额度
+                        {{ t('ui.unlimitedQuota') }}
                       </Badge>
                       <span
                         v-else
@@ -211,9 +209,7 @@
                       </span>
                     </div>
                     <div class="flex items-center gap-2 text-[11px] text-muted-foreground flex-wrap">
-                      <span>
-                        已消费：
-                        <span class="font-medium tabular-nums text-foreground">${{ getApiKeyWalletConsumed(apiKey).toFixed(2) }}</span>
+                      <span> {{ t('ui.consumed7e0201d') }} <span class="font-medium tabular-nums text-foreground">${{ getApiKeyWalletConsumed(apiKey).toFixed(2) }}</span>
                       </span>
                     </div>
                   </div>
@@ -221,13 +217,13 @@
                 <TableCell class="py-4">
                   <div class="space-y-1 text-xs">
                     <div class="text-muted-foreground">
-                      请求: <span class="font-medium text-foreground">{{ (apiKey.total_requests || 0).toLocaleString() }}</span>
+                      {{ t('ui.requests82c54b3') }} <span class="font-medium text-foreground">{{ (apiKey.total_requests || 0).toLocaleString() }}</span>
                     </div>
                     <div class="text-muted-foreground">
                       Tokens: <span class="font-medium text-foreground">{{ formatApiKeyTotalTokens(apiKey) }}</span>
                     </div>
                     <div class="flex items-center gap-1 text-muted-foreground">
-                      <span>限速:</span>
+                      <span>{{ t('ui.rateLimit') }}</span>
                       <Badge
                         v-if="isRateLimitInherited(apiKey.rate_limit) || isRateLimitUnlimited(apiKey.rate_limit)"
                         variant="secondary"
@@ -243,7 +239,7 @@
                       </span>
                     </div>
                     <div class="flex items-center gap-1 text-muted-foreground">
-                      <span>并发:</span>
+                      <span>{{ t('ui.concurrencye213a23') }}</span>
                       <Badge
                         v-if="isConcurrentLimitInherited(apiKey.concurrent_limit) || isConcurrentLimitUnlimited(apiKey.concurrent_limit)"
                         variant="secondary"
@@ -282,7 +278,7 @@
                       v-else
                       class="text-muted-foreground"
                     >
-                      永不过期
+                      {{ t('ui.neverExpires') }}
                     </div>
                   </div>
                 </TableCell>
@@ -295,7 +291,7 @@
                     <span
                       v-else
                       class="text-muted-foreground"
-                    >暂无记录</span>
+                    >{{ t('ui.noRecords') }}</span>
                   </div>
                 </TableCell>
                 <TableCell class="w-[100px] py-4">
@@ -304,7 +300,7 @@
                       :variant="apiKey.is_active ? 'success' : 'destructive'"
                       class="h-5 px-1.5 py-0 text-[10px] font-medium"
                     >
-                      {{ apiKey.is_active ? '活跃' : '禁用' }}
+                      {{ apiKey.is_active ? t('ui.activee85e590') : t('ui.disable') }}
                     </Badge>
                     <Badge
                       v-if="getApiKeyWallet(apiKey.id)"
@@ -321,7 +317,7 @@
                       variant="ghost"
                       size="icon"
                       class="h-7 w-7"
-                      title="一键安装并配置 CLI"
+                      :title="t('ui.oneClickInstallAndConfigureCli')"
                       @click="openInstallDialog(apiKey)"
                     >
                       <Terminal class="h-3.5 w-3.5" />
@@ -330,7 +326,7 @@
                       variant="ghost"
                       size="icon"
                       class="h-7 w-7"
-                      title="编辑"
+                      :title="t('ui.edit0518365')"
                       @click="editApiKey(apiKey)"
                     >
                       <SquarePen class="h-3.5 w-3.5" />
@@ -339,7 +335,7 @@
                       variant="ghost"
                       size="icon"
                       class="h-7 w-7"
-                      title="资金操作"
+                      :title="t('ui.walletOperation')"
                       @click="openAddBalanceDialog(apiKey)"
                     >
                       <DollarSign class="h-3.5 w-3.5" />
@@ -348,7 +344,7 @@
                       variant="ghost"
                       size="icon"
                       class="h-7 w-7"
-                      :title="apiKey.is_active ? '禁用' : '启用'"
+                      :title="apiKey.is_active ? t('ui.disable') : t('ui.enablef4f0ead')"
                       @click="toggleApiKey(apiKey)"
                     >
                       <Power class="h-3.5 w-3.5" />
@@ -357,7 +353,7 @@
                       variant="ghost"
                       size="icon"
                       class="h-7 w-7"
-                      title="删除"
+                      :title="t('ui.delete')"
                       @click="deleteApiKey(apiKey)"
                     >
                       <Trash2 class="h-3.5 w-3.5" />
@@ -374,8 +370,8 @@
             v-if="filteredApiKeys.length === 0"
             :type="hasActiveFilters ? 'filter' : 'empty'"
             :icon="hasActiveFilters ? undefined : Key"
-            :title="hasActiveFilters ? '未找到匹配的 Key' : '暂无独立余额 Key'"
-            :description="hasActiveFilters ? '尝试调整筛选条件' : '点击右上角按钮创建独立余额 Key'"
+            :title="hasActiveFilters ? t('ui.noMatchingKeys7d94d1b') : t('ui.noStandaloneBalanceKeys')"
+            :description="hasActiveFilters ? t('ui.tryAdjustingFilters') : t('ui.createAStandaloneBalanceKeyToGetStarted')"
             :action-text="hasActiveFilters ? '清除筛选' : undefined"
             action-variant="outline"
             action-size="sm"
@@ -403,7 +399,7 @@
                         variant="ghost"
                         size="icon"
                         class="h-7 w-7 flex-shrink-0 hover:bg-muted"
-                        title="复制完整密钥"
+                        :title="t('ui.copyFullKey')"
                         @click="copyKeyPrefix(apiKey)"
                       >
                         <Copy class="h-3.5 w-3.5" />
@@ -412,9 +408,9 @@
                     <div
                       class="truncate text-sm font-medium text-foreground"
                       :class="{ 'text-muted-foreground': !apiKey.name }"
-                      :title="apiKey.name || '未命名 Key'"
+                      :title="apiKey.name || t('ui.untitledKey')"
                     >
-                      {{ apiKey.name || '未命名 Key' }}
+                      {{ apiKey.name || t('ui.untitledKey') }}
                     </div>
                   </div>
                 </div>
@@ -424,7 +420,7 @@
                     :variant="apiKey.is_active ? 'success' : 'destructive'"
                     class="h-5 px-1.5 py-0 text-[10px] font-medium"
                   >
-                    {{ apiKey.is_active ? '活跃' : '禁用' }}
+                    {{ apiKey.is_active ? t('ui.activee85e590') : t('ui.disable') }}
                   </Badge>
                   <Badge
                     v-if="getApiKeyWallet(apiKey.id)"
@@ -450,7 +446,7 @@
                     variant="secondary"
                     class="h-5 px-1.5 py-0 text-[10px] font-medium"
                   >
-                    过期自动删除
+                    {{ t('ui.deleteAutomaticallyOnExpiration') }}
                   </Badge>
                 </div>
 
@@ -458,14 +454,14 @@
                   <div class="flex items-start justify-between gap-3">
                     <div class="space-y-1">
                       <p class="text-[11px] text-muted-foreground">
-                        余额：
+                        {{ t('ui.balance17f82df') }}
                       </p>
                       <Badge
                         v-if="isApiKeyUnlimited(apiKey)"
                         variant="secondary"
                         class="h-5 px-1.5 py-0 text-[10px] font-medium"
                       >
-                        无限额度
+                        {{ t('ui.unlimitedQuota') }}
                       </Badge>
                       <p
                         v-else
@@ -477,7 +473,7 @@
                     </div>
                     <div class="text-right">
                       <p class="text-[11px] text-muted-foreground">
-                        已消费：
+                        {{ t('ui.consumed7e0201d') }}
                       </p>
                       <p class="text-sm font-medium tabular-nums text-foreground">
                         ${{ getApiKeyWalletConsumed(apiKey).toFixed(2) }}
@@ -489,7 +485,7 @@
                 <div class="grid grid-cols-2 gap-2.5 text-xs">
                   <div class="rounded-lg border border-border/50 bg-background/70 p-2.5">
                     <div class="mb-1 text-muted-foreground">
-                      请求次数
+                      {{ t('ui.requestCount') }}
                     </div>
                     <div class="font-medium text-foreground">
                       {{ (apiKey.total_requests || 0).toLocaleString() }}
@@ -505,10 +501,10 @@
                   </div>
                   <div class="col-span-2 rounded-lg border border-border/50 bg-background/70 p-2.5">
                     <div class="mb-1 text-muted-foreground">
-                      有效期
+                      {{ t('ui.validity') }}
                     </div>
                     <div class="font-medium text-foreground">
-                      {{ apiKey.expires_at ? formatDateTime(apiKey.expires_at) : '永不过期' }}
+                      {{ apiKey.expires_at ? formatDateTime(apiKey.expires_at) : t('ui.neverExpires') }}
                     </div>
                     <div
                       v-if="apiKey.expires_at"
@@ -521,23 +517,23 @@
 
                 <div class="rounded-lg bg-muted/35 p-2.5 text-[11px] text-muted-foreground">
                   <div class="flex items-center justify-between gap-2">
-                    <span>创建</span>
+                    <span>{{ t('ui.create') }}</span>
                     <span class="font-medium text-foreground">{{ formatDateTime(apiKey.created_at) }}</span>
                   </div>
                   <div class="mt-1 flex items-center justify-between gap-2">
-                    <span>最近使用</span>
+                    <span>{{ t('ui.lastUsed39a9046') }}</span>
                     <span
                       v-if="apiKey.last_used_at"
                       class="font-medium text-foreground"
                     >{{ formatDateTime(apiKey.last_used_at) }}</span>
-                    <span v-else>暂无记录</span>
+                    <span v-else>{{ t('ui.noRecords') }}</span>
                   </div>
                   <div
                     v-if="apiKey.expires_at"
                     class="mt-1 flex items-center justify-between gap-2"
                   >
-                    <span>过期后</span>
-                    <span>{{ apiKey.auto_delete_on_expiry ? '自动删除' : '仅禁用' }}</span>
+                    <span>{{ t('ui.afterExpiration') }}</span>
+                    <span>{{ apiKey.auto_delete_on_expiry ? t('ui.deleteAutomatically') : t('ui.disableOnly') }}</span>
                   </div>
                 </div>
 
@@ -548,8 +544,7 @@
                     class="h-8 text-xs"
                     @click="openInstallDialog(apiKey)"
                   >
-                    <Terminal class="mr-1.5 h-3.5 w-3.5" />
-                    安装
+                    <Terminal class="mr-1.5 h-3.5 w-3.5" /> {{ t('ui.install') }}
                   </Button>
                   <Button
                     variant="outline"
@@ -557,8 +552,7 @@
                     class="h-8 text-xs"
                     @click="editApiKey(apiKey)"
                   >
-                    <SquarePen class="mr-1.5 h-3.5 w-3.5" />
-                    编辑
+                    <SquarePen class="mr-1.5 h-3.5 w-3.5" /> {{ t('ui.edit0518365') }}
                   </Button>
                   <Button
                     variant="outline"
@@ -566,8 +560,7 @@
                     class="h-8 text-xs"
                     @click="openAddBalanceDialog(apiKey)"
                   >
-                    <DollarSign class="mr-1.5 h-3.5 w-3.5" />
-                    资金
+                    <DollarSign class="mr-1.5 h-3.5 w-3.5" /> {{ t('ui.wallet4cd1c82') }}
                   </Button>
                   <Button
                     variant="outline"
@@ -576,7 +569,7 @@
                     @click="toggleApiKey(apiKey)"
                   >
                     <Power class="mr-1.5 h-3.5 w-3.5" />
-                    {{ apiKey.is_active ? '禁用' : '启用' }}
+                    {{ apiKey.is_active ? t('ui.disable') : t('ui.enablef4f0ead') }}
                   </Button>
                   <Button
                     variant="outline"
@@ -584,8 +577,7 @@
                     class="col-span-2 h-8 border-rose-200 text-xs text-rose-600 hover:bg-rose-50 dark:border-rose-900/60 dark:hover:bg-rose-950/40"
                     @click="deleteApiKey(apiKey)"
                   >
-                    <Trash2 class="mr-1.5 h-3.5 w-3.5" />
-                    删除
+                    <Trash2 class="mr-1.5 h-3.5 w-3.5" /> {{ t('ui.delete') }}
                   </Button>
                 </div>
               </div>
@@ -628,10 +620,10 @@
             </div>
             <div class="flex-1 min-w-0">
               <h3 class="text-lg font-semibold text-foreground leading-tight">
-                创建成功
+                {{ t('ui.createdSuccessfully') }}
               </h3>
               <p class="text-xs text-muted-foreground">
-                请妥善保管, 切勿泄露给他人.
+                {{ t('ui.keepItSafeAndDoNotShareIt') }}
               </p>
             </div>
           </div>
@@ -654,7 +646,7 @@
               class="h-11"
               @click="copyKey"
             >
-              复制
+              {{ t('common.copy') }}
             </Button>
           </div>
         </div>
@@ -665,7 +657,7 @@
           class="h-10 px-5"
           @click="closeNewKeyDialog"
         >
-          确定
+          {{ t('ui.confirmfac2a67') }}
         </Button>
       </template>
     </Dialog>
@@ -682,7 +674,7 @@
       :wallet="walletActionTarget?.wallet || null"
       :owner-name="walletActionTarget?.apiKey.name || walletActionTarget?.apiKey.key_display || '未命名 Key'"
       :owner-subtitle="walletActionTarget?.apiKey.key_display || walletActionTarget?.apiKey.username || ''"
-      context-label="独立密钥钱包"
+      :context-label="t('ui.standaloneKeyWallet')"
       accent="blue"
       :show-refunds="false"
       @close="closeWalletActionDrawer"
@@ -692,6 +684,9 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+const { t } = useI18n()
+
 import { ref, computed, onMounted } from 'vue'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
@@ -774,15 +769,15 @@ const filterStatus = ref<'all' | 'active' | 'inactive'>('all')
 const filterBalance = ref<'all' | 'limited' | 'unlimited'>('all')
 
 const statusFilters = [
-  { value: 'all' as const, label: '全部状态' },
-  { value: 'active' as const, label: '活跃' },
-  { value: 'inactive' as const, label: '禁用' }
+  { value: 'all' as const, get label() { return t('ui.allStatuses') } },
+  { value: 'active' as const, get label() { return t('ui.activee85e590') } },
+  { value: 'inactive' as const, get label() { return t('ui.disable') } }
 ]
 
 const balanceFilters = [
-  { value: 'all' as const, label: '全部类型' },
-  { value: 'limited' as const, label: '限额' },
-  { value: 'unlimited' as const, label: '无限' }
+  { value: 'all' as const, get label() { return t('ui.allTypes') } },
+  { value: 'limited' as const, get label() { return t('ui.quota') } },
+  { value: 'unlimited' as const, get label() { return t('ui.unlimited8651f50') } }
 ]
 
 const hasActiveFilters = computed(() => {
@@ -886,7 +881,7 @@ async function refreshApiKeys() {
     apiKeyWalletMap.value = buildApiKeyWalletMap(standaloneKeys)
   } catch (err: unknown) {
     log.error('加载独立Keys失败:', err)
-    error(parseApiError(err, '加载独立 Keys 失败'))
+    error(parseApiError(err, t('ui.failedToLoadStandaloneKeys')))
   } finally {
     loading.value = false
   }
@@ -912,14 +907,14 @@ async function toggleApiKey(apiKey: AdminApiKey) {
     success(response.message)
   } catch (err: unknown) {
     log.error('切换密钥状态失败:', err)
-    error(parseApiError(err, '操作失败'))
+    error(parseApiError(err, t('ui.operationFailed')))
   }
 }
 
 async function deleteApiKey(apiKey: AdminApiKey) {
   const confirmed = await confirmDanger(
     `确定要删除这个独立余额 Key 吗？\n\n${apiKey.name || apiKey.key_display || '****'}\n\n此操作无法撤销。`,
-    '删除独立 Key'
+    t('ui.deleteStandaloneKey')
   )
 
   if (!confirmed) return
@@ -932,7 +927,7 @@ async function deleteApiKey(apiKey: AdminApiKey) {
     success(response.message)
   } catch (err: unknown) {
     log.error('删除密钥失败:', err)
-    error(parseApiError(err, '删除失败'))
+    error(parseApiError(err, t('ui.deletionFailed')))
   }
 }
 
@@ -1023,14 +1018,14 @@ function getApiKeyWalletStatus(apiKeyId: string): string | null {
 
 function formatApiKeyTotalTokens(apiKey: AdminApiKey): string {
   if (apiKey.total_tokens == null) {
-    return '未统计'
+    return t('ui.notMeasured')
   }
   return formatTokens(apiKey.total_tokens)
 }
 
 function formatConcurrentLimitInheritable(concurrentLimit?: number | null): string {
-  if (concurrentLimit == null) return '不限并发'
-  if (concurrentLimit === 0) return '不限并发'
+  if (concurrentLimit == null) return t('ui.unlimitedConcurrency')
+  if (concurrentLimit === 0) return t('ui.unlimitedConcurrency')
   return `${concurrentLimit} 并发`
 }
 
@@ -1056,7 +1051,7 @@ function isNegativeWalletAmount(value: number | null): boolean {
 function openAddBalanceDialog(apiKey: AdminApiKey) {
   const wallet = getApiKeyWallet(apiKey.id)
   if (!wallet) {
-    error('该独立 Key 的钱包尚未初始化，暂时无法进行资金操作')
+    error(t('ui.thisKeyWalletHasNotBeenInitializedBalanceOperationsAre'))
     return
   }
 
@@ -1101,13 +1096,13 @@ async function copyKeyPrefix(apiKey: AdminApiKey) {
     const response = await adminApi.getFullApiKey(apiKey.id)
     const copied = await copyToClipboard(response.key, false)
     if (copied) {
-      success('完整密钥已复制到剪贴板')
+      success(t('ui.fullKeyCopiedToClipboard'))
     } else {
-      error('复制失败，请手动复制')
+      error(t('ui.copyFailedPleaseCopyManually'))
     }
   } catch (err) {
     log.error('复制密钥失败:', err)
-    error('复制失败，请重试')
+    error(t('ui.copyFailedPleaseTryAgain'))
   }
 }
 
@@ -1136,14 +1131,14 @@ function getRelativeTime(dateString: string): string {
   const now = new Date()
   const diff = date.getTime() - now.getTime()
 
-  if (diff < 0) return '已过期'
+  if (diff < 0) return t('ui.expired')
 
   const days = Math.floor(diff / (1000 * 60 * 60 * 24))
   const hours = Math.floor(diff / (1000 * 60 * 60))
 
   if (days > 0) return `${days}天后过期`
   if (hours > 0) return `${hours}小时后过期`
-  return '即将过期'
+  return t('ui.aboutToExpire')
 }
 
 // ========== 统一表单对话框方法 ==========
@@ -1166,14 +1161,14 @@ async function handleKeyFormSubmit(data: StandaloneKeyFormData) {
   if (data.expires_at) {
     const selectedDate = parseDateInput(data.expires_at)
     if (!selectedDate) {
-      error('过期日期格式无效')
+      error(t('ui.invalidExpirationDate'))
       return
     }
     selectedDate.setHours(0, 0, 0, 0)
     const today = new Date()
     today.setHours(0, 0, 0, 0)
     if (selectedDate <= today) {
-      error('过期日期必须晚于今天')
+      error(t('ui.expirationDateMustBeAfterToday'))
       return
     }
   }
@@ -1206,12 +1201,12 @@ async function handleKeyFormSubmit(data: StandaloneKeyFormData) {
         }
         apiKeyWalletMap.value = buildApiKeyWalletMap(apiKeys.value)
       }
-      success('API Key 更新成功')
+      success(t('ui.apiKeyUpdated70523c1'))
     } else {
       // 创建
       const isUnlimited = Boolean(data.unlimited_balance)
       if (!isUnlimited && (!data.initial_balance_usd || data.initial_balance_usd <= 0)) {
-        error('初始余额必须大于 0')
+        error(t('ui.initialBalanceMustBeGreaterThanZero'))
         return
       }
       const createData: CreateStandaloneApiKeyRequest = {
@@ -1231,15 +1226,16 @@ async function handleKeyFormSubmit(data: StandaloneKeyFormData) {
       const response = await adminApi.createStandaloneApiKey(createData)
       newKeyValue.value = response.key
       showNewKeyDialog.value = true
-      success('独立 Key 创建成功')
+      success(t('ui.standaloneKeyCreated'))
       await refreshApiKeys()
     }
     closeKeyFormDialog()
   } catch (err: unknown) {
     log.error('保存独立Key失败:', err)
-    error(parseApiError(err, '保存失败'))
+    error(parseApiError(err, t('ui.failedToSave')))
   } finally {
     keyFormDialogRef.value?.setSaving(false)
   }
 }
+
 </script>

@@ -1,7 +1,7 @@
 <template>
   <Dialog
     :open="open"
-    :title="legacyT('连接事件')"
+    :title="t('ui.connectionEvents')"
     :description="description"
     size="lg"
     @update:open="$emit('update:open', $event)"
@@ -12,15 +12,15 @@
         class="grid grid-cols-3 gap-3 text-sm"
       >
         <div class="bg-muted/40 rounded-lg px-3 py-2 text-center">
-          <span class="block text-foreground/60 text-xs">{{ legacyT('失败请求') }}</span>
+          <span class="block text-foreground/60 text-xs">{{ t('ui.failedRequests') }}</span>
           <span class="tabular-nums font-medium">{{ formatProxyNodeNumber(node.failed_requests || 0) }}</span>
         </div>
         <div class="bg-muted/40 rounded-lg px-3 py-2 text-center">
-          <span class="block text-foreground/60 text-xs">{{ legacyT('DNS 失败') }}</span>
+          <span class="block text-foreground/60 text-xs">{{ t('ui.dnsFailures') }}</span>
           <span class="tabular-nums font-medium">{{ formatProxyNodeNumber(node.dns_failures || 0) }}</span>
         </div>
         <div class="bg-muted/40 rounded-lg px-3 py-2 text-center">
-          <span class="block text-foreground/60 text-xs">{{ legacyT('流错误') }}</span>
+          <span class="block text-foreground/60 text-xs">{{ t('ui.streamErrors') }}</span>
           <span class="tabular-nums font-medium">{{ formatProxyNodeNumber(node.stream_errors || 0) }}</span>
         </div>
       </div>
@@ -29,13 +29,13 @@
         v-if="loading"
         class="py-8 text-center text-muted-foreground text-sm"
       >
-        {{ legacyT('加载中...') }}
+        {{ t('common.loading') }}
       </div>
       <div
         v-else-if="events.length === 0"
         class="py-8 text-center text-muted-foreground text-sm"
       >
-        {{ legacyT('暂无连接事件记录') }}
+        {{ t('ui.noConnectionEvents') }}
       </div>
       <div
         v-else
@@ -50,7 +50,7 @@
             :variant="proxyNodeEventTypeVariant(event.event_type)"
             class="text-[10px] px-1.5 py-0 shrink-0"
           >
-            {{ legacyT(proxyNodeEventTypeLabel(event.event_type)) }}
+            {{ proxyNodeEventTypeLabel(event.event_type) }}
           </Badge>
           <span class="text-muted-foreground truncate flex-1">{{ proxyNodeEventDetail(event) }}</span>
           <span class="text-xs text-muted-foreground/70 tabular-nums shrink-0">{{ formatProxyNodeTime(event.created_at, locale) }}</span>
@@ -62,7 +62,7 @@
         variant="outline"
         @click="$emit('update:open', false)"
       >
-        {{ legacyT('关闭') }}
+        {{ t('ui.close') }}
       </Button>
     </template>
   </Dialog>
@@ -92,12 +92,10 @@ defineEmits<{
   'update:open': [value: boolean]
 }>()
 
-const { legacyT, locale } = useI18n()
+const { t, locale } = useI18n()
 
 const description = computed(() => {
   if (!props.node) return ''
-  return locale.value === 'en-US'
-    ? `${props.node.name} connection history`
-    : `${props.node.name} 的连接历史`
+  return t('feedback.proxy.connectionHistory', { name: props.node.name })
 })
 </script>

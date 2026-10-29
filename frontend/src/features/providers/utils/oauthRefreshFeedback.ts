@@ -1,3 +1,5 @@
+
+import { translate as t } from '@/i18n'
 import {
   getAccountStatusDisplay,
   type ProviderKeyStatusCarrier,
@@ -52,30 +54,30 @@ export function getOAuthRefreshFeedback(
     if (recheckError) {
       return {
         tone: 'warning',
-        message: `Token 刷新成功，但额度/账号状态复检失败：${formatRecheckError(recheckError)}`,
+        message: t('providers.migration.tokenRefreshedButQuotaAccountb55c0b', { value: String(formatRecheckError(recheckError)) }),
       }
     }
     if (blockedLabel) {
       return {
         tone: 'warning',
-        message: `Token 刷新成功，已重新检查额度/账号状态；当前状态仍是${blockedLabel}`,
+        message: t('providers.migration.tokenRefreshedAndQuotaAccount066e25', { value: String(blockedLabel) }),
       }
     }
     return {
       tone: 'success',
-      message: 'Token 刷新成功，已重新检查额度/账号状态',
+      message: t('providers.migration.tokenRefreshedAndQuotaAccount9a9b33'),
     }
   }
 
   if (blockedLabel) {
     return {
       tone: 'warning',
-      message: `Token 刷新成功，但当前状态仍是${blockedLabel}`,
+      message: t('providers.migration.tokenRefreshedButCurrentStatus4b5e8f', { value: String(blockedLabel) }),
     }
   }
 
   return {
     tone: 'success',
-    message: 'Token 刷新成功',
+    message: t('providers.migration.tokenRefreshedb58cab'),
   }
 }

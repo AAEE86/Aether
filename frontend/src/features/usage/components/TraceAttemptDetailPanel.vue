@@ -75,7 +75,7 @@
           v-if="currentAttemptTimeRange"
           class="info-item"
         >
-          <span class="info-label">时间范围</span>
+          <span class="info-label">{{ t('ui.timeRange') }}</span>
           <span class="info-value mono time-range-value">
             {{ formatTime(currentAttemptTimeRange.startIso) }}
             <span class="time-arrow-container">
@@ -85,21 +85,21 @@
               >+{{ currentAttemptTimeRange.durationLabel }}</span>
               <span class="time-arrow">→</span>
             </span>
-            {{ currentAttemptTimeRange.endIso ? formatTime(currentAttemptTimeRange.endIso) : '进行中' }}
+            {{ currentAttemptTimeRange.endIso ? formatTime(currentAttemptTimeRange.endIso) : t('ui.inProgress') }}
           </span>
         </div>
         <div
           v-if="currentAttempt.extra_data?.first_byte_time_ms != null"
           class="info-item"
         >
-          <span class="info-label">首字 (TTFB)</span>
+          <span class="info-label">{{ t('ui.firstByteTtfb') }}</span>
           <span class="info-value mono">{{ formatLatency(currentAttempt.extra_data.first_byte_time_ms) }}</span>
         </div>
         <div
           v-if="currentAttemptFormatDisplay"
           class="info-item"
         >
-          <span class="info-label">格式</span>
+          <span class="info-label">{{ t('ui.format') }}</span>
           <span class="info-value">
             <code class="format-code">{{ currentAttemptFormatDisplay }}</code>
           </span>
@@ -108,7 +108,7 @@
           v-if="currentAttemptRequestPathDisplay"
           class="info-item"
         >
-          <span class="info-label">请求路径</span>
+          <span class="info-label">{{ t('ui.requestPath') }}</span>
           <span class="info-value">
             <code class="format-code request-path-code">{{ currentAttemptRequestPathDisplay }}</code>
           </span>
@@ -117,7 +117,7 @@
           v-if="currentAttemptKeyDisplay"
           class="info-item"
         >
-          <span class="info-label">{{ isOAuthType(currentAttempt.key_auth_type) ? '账号' : '密钥' }}</span>
+          <span class="info-label">{{ isOAuthType(currentAttempt.key_auth_type) ? t('ui.account') : t('ui.key') }}</span>
           <span class="info-value info-value-stacked">
             <span class="key-name">
               {{ currentAttemptKeyDisplay }}
@@ -136,26 +136,24 @@
           v-if="currentAttemptKeyFormatsDisplay"
           class="info-item"
         >
-          <span class="info-label">支持端点</span>
+          <span class="info-label">{{ t('ui.supportedEndpoints') }}</span>
           <span class="info-value info-value-stacked">
             <code class="format-code">{{ currentAttemptKeyFormatsDisplay }}</code>
-            <span class="text-xs text-muted-foreground">
-              Key 声明的可用 endpoint 格式
-            </span>
+            <span class="text-xs text-muted-foreground"> {{ t('ui.endpointFormatsAllowedByTheKey') }} </span>
           </span>
         </div>
         <div
           v-if="currentAttempt.extra_data?.proxy"
           class="info-item"
         >
-          <span class="info-label">代理</span>
+          <span class="info-label">{{ t('ui.proxy') }}</span>
           <span class="info-value info-value-stacked">
             <span class="proxy-name">
-              {{ currentAttempt.extra_data.proxy.node_name || currentAttempt.extra_data.proxy.url || '未知' }}
+              {{ currentAttempt.extra_data.proxy.node_name || currentAttempt.extra_data.proxy.url || t('chart.unknown') }}
               <span
                 v-if="currentAttempt.extra_data.proxy.source === 'system'"
                 class="text-xs text-muted-foreground ml-1"
-              >(系统)</span>
+              >{{ t('ui.system') }}</span>
             </span>
             <span class="proxy-detail">
               <span
@@ -179,7 +177,7 @@
           v-if="currentAttempt.extra_data?.pool_selection"
           class="info-item"
         >
-          <span class="info-label">号池调度</span>
+          <span class="info-label">{{ t('ui.poolScheduling') }}</span>
           <span class="info-value info-value-stacked">
             <span class="pool-reason">
               <span
@@ -191,7 +189,7 @@
               <span
                 v-if="currentAttempt.extra_data.pool_selection.cost_soft_threshold"
                 class="pool-cost-warn"
-              >接近限额</span>
+              >{{ t('ui.nearQuotaLimit') }}</span>
             </span>
             <span
               v-if="currentAttempt.extra_data.pool_selection.cost_window_usage"
@@ -209,7 +207,7 @@
           v-if="currentAttempt.extra_data?.pool_skip"
           class="info-item"
         >
-          <span class="info-label">号池跳过</span>
+          <span class="info-label">{{ t('ui.poolSkipped') }}</span>
           <span class="info-value info-value-stacked">
             <span class="pool-skip-type">
               {{ poolSkipLabel(currentAttempt.extra_data.pool_skip.type) }}
@@ -238,7 +236,7 @@
         class="image-progress-block"
       >
         <div class="image-progress-header">
-          <span class="image-progress-title">图片生成进度</span>
+          <span class="image-progress-title">{{ t('ui.imageGenerationProgress') }}</span>
           <span
             class="image-progress-phase"
             :class="imageProgressPhaseClass(currentImageProgress.phase)"
@@ -248,32 +246,32 @@
         </div>
         <div class="image-progress-grid">
           <div class="image-progress-item">
-            <span class="image-progress-label">上游 TTFB</span>
+            <span class="image-progress-label">{{ t('ui.upstreamTtfb') }}</span>
             <span class="image-progress-value mono">{{ formatLatency(currentImageProgress.upstream_ttfb_ms) }}</span>
           </div>
           <div class="image-progress-item">
-            <span class="image-progress-label">SSE 帧数</span>
+            <span class="image-progress-label">{{ t('ui.sseFrames') }}</span>
             <span class="image-progress-value mono">{{ formatProgressCount(currentImageProgress.upstream_sse_frame_count) }}</span>
           </div>
           <div class="image-progress-item">
-            <span class="image-progress-label">Partial 图片</span>
+            <span class="image-progress-label">{{ t('ui.partialImages') }}</span>
             <span class="image-progress-value mono">{{ formatProgressCount(currentImageProgress.partial_image_count) }}</span>
           </div>
           <div class="image-progress-item">
-            <span class="image-progress-label">最后帧</span>
+            <span class="image-progress-label">{{ t('ui.lastFrame') }}</span>
             <span class="image-progress-value mono">{{ formatProgressFrameTime(currentImageProgress.last_upstream_frame_at_unix_ms) }}</span>
           </div>
           <template v-if="hasDownstreamHeartbeatProgress">
             <div class="image-progress-item">
-              <span class="image-progress-label">下游心跳</span>
+              <span class="image-progress-label">{{ t('ui.downstreamHeartbeat') }}</span>
               <span class="image-progress-value mono">{{ formatProgressCount(currentImageProgress.downstream_heartbeat_count) }}</span>
             </div>
             <div class="image-progress-item">
-              <span class="image-progress-label">心跳间隔</span>
+              <span class="image-progress-label">{{ t('ui.heartbeatInterval') }}</span>
               <span class="image-progress-value mono">{{ formatLatency(currentImageProgress.downstream_heartbeat_interval_ms) }}</span>
             </div>
             <div class="image-progress-item">
-              <span class="image-progress-label">最后心跳</span>
+              <span class="image-progress-label">{{ t('ui.lastHeartbeat') }}</span>
               <span class="image-progress-value mono">{{ formatProgressFrameTime(currentImageProgress.last_downstream_heartbeat_at_unix_ms) }}</span>
             </div>
           </template>
@@ -281,14 +279,14 @@
             v-if="currentImageProgress.last_upstream_event"
             class="image-progress-item full-width"
           >
-            <span class="image-progress-label">上游事件</span>
+            <span class="image-progress-label">{{ t('ui.upstreamEvents') }}</span>
             <code class="image-progress-code">{{ currentImageProgress.last_upstream_event }}</code>
           </div>
           <div
             v-if="currentImageProgress.last_client_visible_event"
             class="image-progress-item full-width"
           >
-            <span class="image-progress-label">客户端可见事件</span>
+            <span class="image-progress-label">{{ t('ui.clientVisibleEvents') }}</span>
             <code class="image-progress-code">{{ currentImageProgress.last_client_visible_event }}</code>
           </div>
         </div>
@@ -303,13 +301,13 @@
           <!-- 输入 输出 -->
           <div class="usage-row">
             <div class="usage-item">
-              <span class="usage-label">输入</span>
+              <span class="usage-label">{{ t('ui.enter') }}</span>
               <span class="usage-tokens">{{ formatTokens(usageData.tokens.input) }}</span>
               <span class="usage-cost">${{ usageData.cost.input.toFixed(6) }}</span>
             </div>
             <div class="usage-divider" />
             <div class="usage-item">
-              <span class="usage-label">输出</span>
+              <span class="usage-label">{{ t('ui.outputfb04add') }}</span>
               <span class="usage-tokens">{{ formatTokens(usageData.tokens.output) }}</span>
               <span class="usage-cost">${{ usageData.cost.output.toFixed(6) }}</span>
             </div>
@@ -320,13 +318,13 @@
             class="usage-row"
           >
             <div class="usage-item">
-              <span class="usage-label">缓存创建</span>
+              <span class="usage-label">{{ t('ui.cacheCreation') }}</span>
               <span class="usage-tokens">{{ formatTokens(usageData.tokens.cache_creation || 0) }}</span>
               <span class="usage-cost">${{ (usageData.cost.cache_creation || 0).toFixed(6) }}</span>
             </div>
             <div class="usage-divider" />
             <div class="usage-item">
-              <span class="usage-label">缓存读取</span>
+              <span class="usage-label">{{ t('ui.cacheRead1ded655') }}</span>
               <span class="usage-tokens">{{ formatTokens(usageData.tokens.cache_read || 0) }}</span>
               <span class="usage-cost">${{ (usageData.cost.cache_read || 0).toFixed(6) }}</span>
             </div>
@@ -358,7 +356,7 @@
         class="error-block"
       >
         <div class="error-heading">
-          <span class="error-type">错误信息</span>
+          <span class="error-type">{{ t('ui.errorMessage') }}</span>
           <span
             v-if="currentAttemptRequestError.statusCode != null"
             class="error-status-badge"
@@ -371,13 +369,13 @@
           v-if="currentAttemptRequestError.upstreamStatusCode != null && currentAttemptRequestError.upstreamStatusCode !== currentAttemptRequestError.statusCode"
           class="error-upstream-status text-xs text-muted-foreground mb-1"
         >
-          上游响应状态：HTTP {{ currentAttemptRequestError.upstreamStatusCode }}（本次尝试状态见上方）
+          {{ t('ui.upstreamResponseStatusHttp') }} {{ currentAttemptRequestError.upstreamStatusCode }}{{ t('ui.seeThisAttemptSStatusAbove') }}
         </div>
         <div
           v-if="currentAttemptRequestError.finalStatusCode != null"
           class="error-final-status text-xs text-muted-foreground mb-1"
         >
-          请求最终状态：HTTP {{ currentAttemptRequestError.finalStatusCode }}（与本次尝试状态不同）
+          {{ t('ui.finalRequestStatusHttp') }} {{ currentAttemptRequestError.finalStatusCode }}{{ t('ui.differsFromThisAttemptSStatus') }}
         </div>
         <div
           v-if="currentAttemptRequestError.message"
@@ -392,8 +390,8 @@
           <JsonContentPanel
             :data="currentAttemptRequestError.upstreamResponse"
             :is-dark="isDark"
-            title="上游响应"
-            empty-message="无上游响应"
+            :title="t('ui.upstreamResponse')"
+            :empty-message="t('ui.noUpstreamResponse')"
           />
         </div>
       </div>
@@ -408,8 +406,8 @@
           :custom-copy="true"
           :copied="diagnosticCopied"
           :copy-disabled="diagnosticCopying"
-          title="失败诊断"
-          empty-message="无失败诊断信息"
+          :title="t('ui.failureDiagnostics')"
+          :empty-message="t('ui.noFailureDiagnostics')"
           @copy="copyFailureDiagnostic"
         />
       </div>
@@ -417,7 +415,7 @@
         v-if="diagnosticDisplay"
         class="text-xs text-muted-foreground mt-1"
       >
-        {{ diagnosticCopying ? '正在读取并脱敏诊断上下文…' : '复制时补取已采集的正文并脱敏；未采集、无权限或超限的信息会明确标注。分享前请检查诊断内容。' }}
+        {{ diagnosticCopying ? t('ui.loadingAndRedactingDiagnosticContext') : t('ui.copyLoadsAndRedactsCapturedBodiesMissingForbiddenOrOversized') }}
       </p>
 
       <!-- 额外数据 -->
@@ -426,13 +424,13 @@
         class="extra-block"
       >
         <summary class="extra-toggle">
-          额外信息
+          {{ t('ui.additionalInformation') }}
         </summary>
         <JsonContentPanel
           class="extra-json-panel"
           :data="currentAttemptExtraDataDisplay"
           :is-dark="isDark"
-          empty-message="无额外信息"
+          :empty-message="t('ui.noAdditionalInformation')"
         />
       </details>
     </div>
@@ -440,6 +438,8 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { ChevronLeft, ChevronRight, ExternalLink } from 'lucide-vue-next'
 import JsonContentPanel from './JsonContentPanel.vue'
@@ -515,6 +515,8 @@ defineEmits<{
   navigateGroup: [direction: number]
   navigateAttempt: [direction: number]
 }>()
+
+const { t } = useI18n()
 
 const currentAttempt = computed(() => props.attempt)
 const selectedGroup = computed(() => props.group)
@@ -801,21 +803,21 @@ function buildAttemptDiagnosticPayload(
   const analysisHint = (() => {
     const raw = `${summary}\n${rawMessageForBreakpoint}\n${attempt.error_message ?? ''}`.toLowerCase()
     if (isStreamFinishErrorDiagnostic(raw)) {
-      return '上游通过结束原因报告了流式错误：检查原始 SSE 中的 error/message 及上游日志；保持失败状态，不要映射为正常结束。'
+      return t('ui.theUpstreamFinishReasonReportsAStreamingErrorInspectError')
     }
     if (isStreamTerminalDiagnosticMessage(raw)) {
-      return '断点在上游流式终态校验：检查原始结束原因及协议兼容性；该错误不代表发生了格式转换，不能确认成功时保持失败闭合。'
+      return t('ui.theFailureIsInUpstreamStreamTerminalValidationCheckThe')
     }
     if (raw.includes('unsupported provider stream event')) {
-      return '断点在上游流式事件解析/转换矩阵：先按 breakpoint 对应字段确认 event type，再决定是补 canonical mapping 还是加入 known noop。'
+      return t('ui.theFailureIsInUpstreamStreamingEventParsingOrConversion')
     }
     if (raw.includes('finish reason')) {
-      return '断点在 finish_reason 映射：确认该结束原因是否可等价映射；不能无损映射时保持失败闭合。'
+      return t('ui.theFailureIsInFinishReasonMappingCheckWhetherAn')
     }
     if (raw.includes('lossy conversion') || raw.includes('无损') || raw.includes('丢失信息') || raw.includes('request_conversion')) {
-      return '断点在请求/响应格式转换器：检查 breakpoint 字段是否能被目标格式表达，不能表达就需要拒绝、降级或新增显式映射策略。'
+      return t('ui.theFailureIsInRequestOrResponseConversionCheckWhether')
     }
-    return '先从 breakpoint 字段开始回放；若 breakpoint 为 $，优先查看 raw.failure_diagnostic / node.error_message 和 upstream_response。'
+    return t('ui.startReplayingFromTheBreakpointFieldIfTheBreakpointIsb754dc3')
   })()
 
   const payload = {
@@ -941,6 +943,7 @@ const currentAttemptExtraDataDisplay = computed<Record<string, unknown> | null>(
 
   return Object.keys(display).length > 0 ? display : null
 })
+
 </script>
 
 <style scoped>

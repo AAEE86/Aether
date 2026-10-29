@@ -7,25 +7,25 @@
         </div>
         <div class="mt-2 grid grid-cols-[max-content_max-content_max-content_max-content_max-content] items-center gap-x-2 overflow-x-auto whitespace-nowrap text-xs sm:hidden">
           <span>
-            <span class="text-muted-foreground">总费用</span>
+            <span class="text-muted-foreground">{{ t('ui.totalCost') }}</span>
             <span
               class="ml-1 font-bold"
               :class="detailPricingAvailable ? 'text-green-600 dark:text-green-400' : 'text-muted-foreground'"
               data-request-detail-total-cost
             >
-              {{ detailPricingAvailable ? `$${detailTotalCostForDisplay.toFixed(6)}` : (detailUsageAvailable ? '未计价' : '不可用') }}
+              {{ detailPricingAvailable ? `$${detailTotalCostForDisplay.toFixed(6)}` : (detailUsageAvailable ? t('ui.unpriced') : t('ui.unavailable460b357')) }}
             </span>
           </span>
           <span class="text-muted-foreground">|</span>
           <span>
-            <span class="text-muted-foreground">耗时</span>
+            <span class="text-muted-foreground">{{ t('ui.duration') }}</span>
             <span class="ml-1 font-bold">
               {{ formatDurationMs(detail.end_to_end_first_byte_time_ms ?? detail.first_byte_time_ms) }} / {{ formatDurationMs(detail.end_to_end_time_ms ?? detail.response_time_ms) }}
             </span>
           </span>
           <span class="text-muted-foreground">|</span>
           <span>
-            <span class="text-muted-foreground">输出速度</span>
+            <span class="text-muted-foreground">{{ t('ui.outputSpeed') }}</span>
             <span class="ml-1 font-bold text-primary">{{ formatOutputRateValue(detailOutputRate) }}tps</span>
           </span>
         </div>
@@ -33,25 +33,25 @@
           <span class="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground/70">{{ detailPricingLabel }}</span>
           <span class="text-muted-foreground">|</span>
           <span class="whitespace-nowrap">
-            <span class="text-muted-foreground">总费用</span>
+            <span class="text-muted-foreground">{{ t('ui.totalCost') }}</span>
             <span
               class="ml-1 font-bold"
               :class="detailPricingAvailable ? 'text-green-600 dark:text-green-400' : 'text-muted-foreground'"
               data-request-detail-total-cost
             >
-              {{ detailPricingAvailable ? `$${detailTotalCostForDisplay.toFixed(6)}` : (detailUsageAvailable ? '未计价' : '不可用') }}
+              {{ detailPricingAvailable ? `$${detailTotalCostForDisplay.toFixed(6)}` : (detailUsageAvailable ? t('ui.unpriced') : t('ui.unavailable460b357')) }}
             </span>
           </span>
           <span class="text-muted-foreground">|</span>
           <span class="whitespace-nowrap">
-            <span class="text-muted-foreground">耗时</span>
+            <span class="text-muted-foreground">{{ t('ui.duration') }}</span>
             <span class="ml-1 font-bold">
               {{ formatDurationMs(detail.end_to_end_first_byte_time_ms ?? detail.first_byte_time_ms) }} / {{ formatDurationMs(detail.end_to_end_time_ms ?? detail.response_time_ms) }}
             </span>
           </span>
           <span class="text-muted-foreground">|</span>
           <span class="whitespace-nowrap">
-            <span class="text-muted-foreground">输出速度</span>
+            <span class="text-muted-foreground">{{ t('ui.outputSpeed') }}</span>
             <span class="ml-1 font-bold text-primary">{{ formatOutputRateValue(detailOutputRate) }}tps</span>
           </span>
         </div>
@@ -67,7 +67,7 @@
           class="mt-3 flex items-start gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-400"
         >
           <ShieldCheck class="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          <span>此请求触发了敏感信息保护：发送给上游供应商的内容已将敏感信息替换为占位符。</span>
+          <span>{{ t('ui.thisRequestTriggeredSensitiveInformationProtectionSensitiveInformationWasReplaced') }}</span>
         </div>
       </div>
 
@@ -79,16 +79,14 @@
         data-request-detail-usage-unavailable
         class="rounded-lg border border-dashed border-muted-foreground/30 bg-muted/20 p-3 text-xs text-muted-foreground"
       >
-        上游未提供可验证的 token/费用用量，本会话不显示伪造的 0 token 或 0 费用。
+        {{ t('ui.theUpstreamDidNotProvideVerifiableTokenOrCostUsagebb920c5') }}
       </div>
       <div
         v-else-if="!detailPricingAvailable"
         data-request-detail-usage-unpriced
         class="rounded-lg border border-dashed border-muted-foreground/30 bg-muted/20 p-3 text-xs text-muted-foreground"
       >
-        上游提供了权威 token 用量，但包含 Aether 当前计价规则无法安全拆分的音频 token；保留 token 统计并将本会话标记为未计价。
-        <span v-if="(detail.input_audio_tokens || 0) > 0 || (detail.output_audio_tokens || 0) > 0">
-          音频输入/输出：{{ detail.input_audio_tokens || 0 }} / {{ detail.output_audio_tokens || 0 }}。
+        {{ t('ui.theUpstreamProvidedAuthoritativeTokenUsageIncludingAudioTokensThat') }} <span v-if="(detail.input_audio_tokens || 0) > 0 || (detail.output_audio_tokens || 0) > 0"> {{ t('ui.audioInputOutput') }}{{ detail.input_audio_tokens || 0 }} / {{ detail.output_audio_tokens || 0 }}。
         </span>
       </div>
 
@@ -99,22 +97,21 @@
       >
         <!-- 阶梯标题 -->
         <div class="text-xs text-muted-foreground flex items-center gap-2 flex-wrap">
-          <span class="font-medium text-foreground">Token 计费</span>
+          <span class="font-medium text-foreground">{{ t('ui.tokenBilling') }}</span>
           <span class="font-mono font-medium text-foreground">
             <template v-if="processingTierPriceMultiplier !== null">
-              ${{ tokenCostBaseTotal.toFixed(6) }} × {{ processingTierPriceMultiplier }} ({{ processingTierLabel }} 层级)
-            </template>
+              ${{ tokenCostBaseTotal.toFixed(6) }} × {{ processingTierPriceMultiplier }} ({{ processingTierLabel }} {{ t('ui.tier0eeaab6') }} </template>
             <template v-else>
               ${{ tokenCostTotal.toFixed(6) }}
             </template>
           </span>
-          <span class="text-muted-foreground/60">(输入 {{ formatTokens(displayInputTokens) }} + 缓存创建 {{ cacheCreationSummaryText }} + 缓存读取 {{ formatTokens(detail.cache_read_input_tokens || 0) }})</span>
+          <span class="text-muted-foreground/60">{{ t('ui.input') }} {{ formatTokens(displayInputTokens) }} {{ t('ui.cacheWrite') }} {{ cacheCreationSummaryText }} {{ t('ui.cacheRead') }} {{ formatTokens(detail.cache_read_input_tokens || 0) }})</span>
           <Badge
             v-if="displayTiers.length > 1"
             variant="outline"
             class="text-[10px] px-1.5 py-0 h-4"
           >
-            命中第 {{ currentTierIndex + 1 }} 阶
+            {{ t('ui.matchedTier') }} {{ currentTierIndex + 1 }} {{ t('ui.tier0e13242') }}
           </Badge>
         </div>
 
@@ -133,9 +130,7 @@
               <span
                 class="font-medium"
                 :class="index === currentTierIndex ? 'text-primary' : 'text-muted-foreground'"
-              >
-                第 {{ index + 1 }} 阶
-              </span>
+              > {{ t('ui.noaf50a0f') }} {{ index + 1 }} {{ t('ui.tier0e13242') }} </span>
               <span class="text-muted-foreground">
                 {{ getTierRangeText(tier, index, displayTiers) }}
               </span>
@@ -144,19 +139,19 @@
                 variant="default"
                 class="text-[10px] px-1.5 py-0 h-4"
               >
-                当前
+                {{ t('ui.current') }}
               </Badge>
             </div>
             <!-- 单价信息 -->
             <div class="grid grid-cols-2 gap-x-4 gap-y-1 text-muted-foreground sm:hidden">
               <div class="grid grid-cols-[max-content_1fr] items-baseline gap-x-1">
-                <span>输入</span>
+                <span>{{ t('ui.enter') }}</span>
                 <span class="text-right">{{ formatPricePerMillion(tier.input_price_per_1m) }}</span>
               </div>
               <div
                 class="grid grid-cols-[max-content_1fr] items-baseline gap-x-1"
               >
-                <span>输出</span>
+                <span>{{ t('ui.outputfb04add') }}</span>
                 <span class="text-right">{{ formatPricePerMillion(tier.output_price_per_1m) }}</span>
               </div>
               <template v-if="getTierActiveCacheCreationDisplay(tier) || shouldShowCacheReadPrice(tier)">
@@ -172,21 +167,20 @@
                   v-if="shouldShowCacheReadPrice(tier)"
                   class="grid grid-cols-[max-content_1fr] items-baseline gap-x-1"
                 >
-                  <span>缓存读取</span>
+                  <span>{{ t('ui.cacheRead1ded655') }}</span>
                   <span class="text-right">${{ formatPrice(getTierActiveCacheReadPrice(tier) ?? 0) }}/M</span>
                 </div>
                 <div v-else />
               </template>
             </div>
             <div class="text-muted-foreground hidden items-center gap-2 flex-wrap sm:flex">
-              <span>输入 {{ formatPricePerMillion(tier.input_price_per_1m) }}</span>
-              <span>输出 {{ formatPricePerMillion(tier.output_price_per_1m) }}</span>
+              <span>{{ t('ui.enter') }} {{ formatPricePerMillion(tier.input_price_per_1m) }}</span>
+              <span>{{ t('ui.outputfb04add') }} {{ formatPricePerMillion(tier.output_price_per_1m) }}</span>
               <span v-if="getTierActiveCacheCreationDisplay(tier)">
                 {{ getTierActiveCacheCreationDisplay(tier)?.label }}
                 ${{ formatPrice(getTierActiveCacheCreationDisplay(tier)?.price || 0) }}/M
               </span>
-              <span v-if="shouldShowCacheReadPrice(tier)">
-                缓存读取 ${{ formatPrice(getTierActiveCacheReadPrice(tier) ?? 0) }}/M
+              <span v-if="shouldShowCacheReadPrice(tier)"> {{ t('ui.cacheRead3de9e07') }}{{ formatPrice(getTierActiveCacheReadPrice(tier) ?? 0) }}/M
               </span>
             </div>
           </div>
@@ -195,22 +189,22 @@
           <template v-if="index === currentTierIndex">
             <div class="grid gap-y-2 sm:hidden">
               <div class="grid grid-cols-[64px_minmax(0,1fr)_92px] items-center gap-x-2">
-                <span class="text-xs text-muted-foreground">输入</span>
+                <span class="text-xs text-muted-foreground">{{ t('ui.enter') }}</span>
                 <span class="text-sm font-semibold font-mono text-right tabular-nums">{{ displayInputTokens }}</span>
                 <span class="text-xs font-mono text-right tabular-nums">${{ displayInputCost.toFixed(6) }}</span>
               </div>
               <div class="grid grid-cols-[64px_minmax(0,1fr)_92px] items-center gap-x-2">
-                <span class="text-xs text-muted-foreground">输出</span>
+                <span class="text-xs text-muted-foreground">{{ t('ui.outputfb04add') }}</span>
                 <span class="text-sm font-semibold font-mono text-right tabular-nums">{{ detail.tokens?.output || detail.output_tokens || 0 }}</span>
                 <span class="text-xs font-mono text-right tabular-nums">${{ displayOutputCost.toFixed(6) }}</span>
               </div>
               <div class="grid grid-cols-[64px_minmax(0,1fr)_92px] items-center gap-x-2">
-                <span class="text-xs text-muted-foreground">缓存创建</span>
+                <span class="text-xs text-muted-foreground">{{ t('ui.cacheCreation') }}</span>
                 <span class="text-sm font-semibold font-mono text-right tabular-nums">{{ totalCacheCreationTokens }}</span>
                 <span class="text-xs font-mono text-right tabular-nums">${{ displayCacheCreationCost.toFixed(6) }}</span>
               </div>
               <div class="grid grid-cols-[64px_minmax(0,1fr)_92px] items-center gap-x-2">
-                <span class="text-xs text-muted-foreground">缓存读取</span>
+                <span class="text-xs text-muted-foreground">{{ t('ui.cacheRead1ded655') }}</span>
                 <span class="text-sm font-semibold font-mono text-right tabular-nums">{{ detail.cache_read_input_tokens || 0 }}</span>
                 <span class="text-xs font-mono text-right tabular-nums">${{ displayCacheReadCost.toFixed(6) }}</span>
               </div>
@@ -218,7 +212,7 @@
             <!-- 输入 输出 -->
             <div class="hidden items-center sm:flex">
               <div class="flex items-center flex-1">
-                <span class="text-xs text-muted-foreground w-[56px]">输入</span>
+                <span class="text-xs text-muted-foreground w-[56px]">{{ t('ui.enter') }}</span>
                 <span class="text-sm font-semibold font-mono flex-1 text-center">{{ displayInputTokens }}</span>
                 <span class="text-xs font-mono">${{ displayInputCost.toFixed(6) }}</span>
               </div>
@@ -227,7 +221,7 @@
                 class="h-4 mx-4"
               />
               <div class="flex items-center flex-1">
-                <span class="text-xs text-muted-foreground w-[56px]">输出</span>
+                <span class="text-xs text-muted-foreground w-[56px]">{{ t('ui.outputfb04add') }}</span>
                 <span class="text-sm font-semibold font-mono flex-1 text-center">{{ detail.tokens?.output || detail.output_tokens || 0 }}</span>
                 <span class="text-xs font-mono">${{ displayOutputCost.toFixed(6) }}</span>
               </div>
@@ -235,7 +229,7 @@
             <!-- 缓存创建 缓存读取 -->
             <div class="hidden items-center sm:flex">
               <div class="flex items-center flex-1">
-                <span class="text-xs text-muted-foreground w-[56px]">{{ cacheCreationSplitRows.length > 0 ? '创建合计' : '缓存创建' }}</span>
+                <span class="text-xs text-muted-foreground w-[56px]">{{ cacheCreationSplitRows.length > 0 ? t('ui.totalCacheWrites') : t('ui.cacheCreation') }}</span>
                 <span class="text-sm font-semibold font-mono flex-1 text-center">{{ totalCacheCreationTokens }}</span>
                 <span class="text-xs font-mono">${{ displayCacheCreationCost.toFixed(6) }}</span>
               </div>
@@ -244,7 +238,7 @@
                 class="h-4 mx-4"
               />
               <div class="flex items-center flex-1">
-                <span class="text-xs text-muted-foreground w-[56px]">缓存读取</span>
+                <span class="text-xs text-muted-foreground w-[56px]">{{ t('ui.cacheRead1ded655') }}</span>
                 <span class="text-sm font-semibold font-mono flex-1 text-center">{{ detail.cache_read_input_tokens || 0 }}</span>
                 <span class="text-xs font-mono">${{ displayCacheReadCost.toFixed(6) }}</span>
               </div>
@@ -303,7 +297,7 @@
         class="space-y-2 mb-3"
       >
         <div class="flex items-center gap-2 text-xs">
-          <span class="font-medium text-foreground">按次计费</span>
+          <span class="font-medium text-foreground">{{ t('ui.perRequestBilling') }}</span>
           <span class="font-mono font-medium text-foreground">${{ perRequestCost.toFixed(6) }}</span>
         </div>
         <div class="rounded-lg p-3 bg-primary/5 border border-primary/30 space-y-2">
@@ -311,11 +305,11 @@
             v-if="effectivePricePerRequest > 0"
             class="flex items-center justify-end text-xs"
           >
-            <span class="text-muted-foreground">${{ effectivePricePerRequest.toFixed(6) }}/次</span>
+            <span class="text-muted-foreground">${{ effectivePricePerRequest.toFixed(6) }}{{ t('ui.requestad9c0d7') }}</span>
           </div>
           <div class="flex items-center">
             <div class="flex items-center flex-1">
-              <span class="text-xs text-muted-foreground w-[56px]">请求次数</span>
+              <span class="text-xs text-muted-foreground w-[56px]">{{ t('ui.requestCount') }}</span>
               <span class="text-sm font-semibold font-mono flex-1 text-center">1</span>
               <span class="text-xs font-mono font-medium">${{ perRequestCost.toFixed(6) }}</span>
             </div>
@@ -330,7 +324,7 @@
       >
         <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 sm:gap-2 text-xs">
           <div class="flex items-center gap-2 flex-wrap">
-            <span class="font-medium text-primary">图片输出</span>
+            <span class="font-medium text-primary">{{ t('ui.imageOutput') }}</span>
             <Badge
               variant="outline"
               class="text-[10px] px-1.5 py-0 h-4"
@@ -346,13 +340,13 @@
             <span
               v-if="imageOutputPricePerImage !== null"
               class="font-mono"
-            >{{ formatTokens(imageOutputCount) }} 张 × ${{ imageOutputPricePerImage.toFixed(6) }}/张 = ${{ imageOutputCostTotal.toFixed(6) }}</span>
+            >{{ formatTokens(imageOutputCount) }} {{ t('ui.images') }}{{ imageOutputPricePerImage.toFixed(6) }}{{ t('ui.image04480b6') }}{{ imageOutputCostTotal.toFixed(6) }}</span>
           </div>
         </div>
 
         <div class="flex items-center">
           <div class="flex items-center flex-1">
-            <span class="text-xs text-muted-foreground w-[56px]">数量</span>
+            <span class="text-xs text-muted-foreground w-[56px]">{{ t('ui.quantity') }}</span>
             <span class="text-sm font-semibold font-mono flex-1 text-center">{{ formatTokens(imageOutputCount) }}</span>
             <span class="text-xs font-mono">${{ imageOutputCostTotal.toFixed(6) }}</span>
           </div>
@@ -361,7 +355,7 @@
             class="h-4 mx-4"
           />
           <div class="flex items-center flex-1">
-            <span class="text-xs text-muted-foreground w-[56px]">格式</span>
+            <span class="text-xs text-muted-foreground w-[56px]">{{ t('ui.format') }}</span>
             <span class="text-sm font-semibold font-mono flex-1 text-center">{{ imageOutputFormat || '-' }}</span>
             <span class="text-xs font-mono text-muted-foreground">{{ imageOutputBillingLabel }}</span>
           </div>
@@ -398,8 +392,7 @@
               v-else-if="detail.video_billing.video_price_per_second"
               class="font-mono"
             >
-              ${{ detail.video_billing.video_price_per_second.toFixed(4) }}/秒
-            </span>
+              ${{ detail.video_billing.video_price_per_second.toFixed(4) }}{{ t('ui.second') }} </span>
           </div>
         </div>
 
@@ -407,7 +400,7 @@
         <div class="flex items-center">
           <div class="flex items-center flex-1">
             <span class="text-xs text-muted-foreground w-[56px]">
-              {{ detail.video_billing.task_type === 'video' ? '时长' : detail.video_billing.task_type === 'audio' ? '时长' : '数量' }}
+              {{ detail.video_billing.task_type === 'video' ? t('ui.duration04a95e0') : detail.video_billing.task_type === 'audio' ? t('ui.duration04a95e0') : t('ui.quantity') }}
             </span>
             <span class="text-sm font-semibold font-mono flex-1 text-center">
               {{ detail.video_billing.duration_seconds ? formatMediaDuration(detail.video_billing.duration_seconds) : '1' }}
@@ -419,7 +412,7 @@
             class="h-4 mx-4 invisible"
           />
           <div class="flex items-center flex-1 invisible">
-            <span class="text-xs text-muted-foreground w-[56px]">占位</span>
+            <span class="text-xs text-muted-foreground w-[56px]">{{ t('ui.placeholder064eb44') }}</span>
             <span class="text-sm font-semibold font-mono flex-1 text-center">0</span>
             <span class="text-xs font-mono">$0.000000</span>
           </div>
@@ -430,6 +423,8 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+
 import { computed } from 'vue'
 import { ShieldCheck } from 'lucide-vue-next'
 import Card from '@/components/ui/card.vue'
@@ -489,6 +484,8 @@ const props = defineProps<{
   outputRate: number | null
 }>()
 
+const { t } = useI18n()
+
 const detail = computed(() => props.detail)
 const headerModelRecord = computed(() => props.headerModelRecord)
 const traceRequestMetadata = computed(() => props.traceRequestMetadata)
@@ -541,13 +538,13 @@ const billingTierInfo = computed<JsonRecord | null>(() =>
 
 // 价格来源优先使用 v3 结算快照，旧 tiered_pricing.source 仅作回退。
 const priceSourceLabel = computed(() => {
-  if (!detail.value) return '历史定价'
+  if (!detail.value) return t('ui.historicalPricing')
   return resolveSettlementPricingSourceLabel(detail.value) ?? '历史定价'
 })
 
 const detailPricingLabel = computed(() => {
-  if (!detailUsageAvailable.value) return '用量不可用'
-  if (!detailPricingAvailable.value) return '音频用量未计价'
+  if (!detailUsageAvailable.value) return t('ui.usageUnavailable')
+  if (!detailPricingAvailable.value) return t('ui.audioUsageUnpriced')
   return priceSourceLabel.value
 })
 
@@ -729,9 +726,9 @@ const imageOutputRangeEnabled = computed(() => {
 })
 
 const imageOutputBillingLabel = computed(() => {
-  if (imageOutputMatrixEnabled.value) return '矩阵计费'
-  if (imageOutputRangeEnabled.value) return '像素区间'
-  return '默认计费'
+  if (imageOutputMatrixEnabled.value) return t('ui.matrixPricing')
+  if (imageOutputRangeEnabled.value) return t('ui.pixelRange')
+  return t('ui.defaultPricing')
 })
 
 const imageOutputPricingDescriptor = computed(() => {
@@ -747,7 +744,7 @@ const imageOutputPricingDescriptor = computed(() => {
     parts.push(formatPixels(imageOutputPixels.value))
   }
   if (parts.length > 0) return parts.join(' · ')
-  if (imageOutputPriceBucket.value === 'default') return '默认价'
+  if (imageOutputPriceBucket.value === 'default') return t('ui.defaultPrice')
   return null
 })
 
@@ -908,7 +905,7 @@ const cacheCreationSplitRows = computed(() => {
     const pricePer1M = getActiveCachePriceForTTL(5, 'cache_creation_price_per_1m')
     rows.push({
       key: '5m',
-      label: '5min 创建',
+      get label() { return t('ui.5MinuteCacheWrite') },
       tokens: cache5m,
       pricePer1M,
       cost: pricePer1M !== null ? (cache5m * pricePer1M) / 1_000_000 : null,
@@ -919,7 +916,7 @@ const cacheCreationSplitRows = computed(() => {
     const pricePer1M = getActiveCachePriceForTTL(60, 'cache_creation_price_per_1m')
     rows.push({
       key: '1h',
-      label: '1h 创建',
+      get label() { return t('ui.1HourCacheWrite') },
       tokens: cache1h,
       pricePer1M,
       cost: pricePer1M !== null ? (cache1h * pricePer1M) / 1_000_000 : null,
@@ -1005,7 +1002,7 @@ function getTierActiveCacheCreationDisplay(
       const fallbackPrice = toFiniteNumber(tier?.cache_creation_price_per_1m)
       if (fallbackPrice !== null) {
         return {
-          label: '缓存创建',
+          get label() { return t('ui.cacheCreation') },
           price: fallbackPrice,
         }
       }
@@ -1015,7 +1012,7 @@ function getTierActiveCacheCreationDisplay(
   const fallbackPrice = toFiniteNumber(tier?.cache_creation_price_per_1m)
   if (fallbackPrice === null) return null
   return {
-    label: '缓存创建',
+    get label() { return t('ui.cacheCreation') },
     price: fallbackPrice,
   }
 }
@@ -1048,4 +1045,5 @@ function getTierActiveCacheReadPrice(tier: PricingTierLike | null | undefined): 
 function shouldShowCacheReadPrice(tier: PricingTierLike | null | undefined): boolean {
   return getTierActiveCacheReadPrice(tier) !== null
 }
+
 </script>

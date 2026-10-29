@@ -12,17 +12,17 @@
         <div class="flex items-start justify-between gap-3">
           <div class="min-w-0">
             <h3 class="text-lg font-semibold text-foreground leading-tight">
-              退款审批
+              {{ t('ui.refundApprovals') }}
             </h3>
             <p class="text-xs text-muted-foreground">
-              退款单: {{ refund.refund_no }}
+              {{ t('ui.refund') }} {{ refund.refund_no }}
             </p>
           </div>
           <Button
             variant="ghost"
             size="icon"
             class="h-9 w-9 shrink-0"
-            title="关闭"
+            :title="t('ui.close')"
             @click="$emit('close')"
           >
             <X class="h-4 w-4" />
@@ -35,7 +35,7 @@
           <div class="grid gap-3 sm:grid-cols-2">
             <div>
               <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-                归属
+                {{ t('ui.owner1e9b3dc') }}
               </div>
               <div class="mt-1 text-sm font-medium">
                 {{ ownerDisplayName(refund.owner_name, refund.owner_type) }}
@@ -46,7 +46,7 @@
             </div>
             <div>
               <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-                金额
+                {{ t('ui.amount') }}
               </div>
               <div class="mt-1 text-sm font-semibold tabular-nums">
                 {{ formatCurrency(refund.amount_usd) }}
@@ -54,7 +54,7 @@
             </div>
             <div>
               <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-                退款模式
+                {{ t('ui.refundMode') }}
               </div>
               <div class="mt-1 text-sm">
                 {{ refundModeLabel(refund.refund_mode) }}
@@ -62,7 +62,7 @@
             </div>
             <div>
               <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-                状态
+                {{ t('ui.status6320b4a') }}
               </div>
               <div class="mt-1">
                 <Badge :variant="refundStatusBadge(refund.status)">
@@ -72,7 +72,7 @@
             </div>
             <div class="sm:col-span-2">
               <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-                申请原因
+                {{ t('ui.requestReason') }}
               </div>
               <div class="mt-1 text-sm text-foreground whitespace-pre-wrap break-words">
                 {{ refund.reason || '-' }}
@@ -83,7 +83,7 @@
               class="sm:col-span-2"
             >
               <div class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-                失败原因
+                {{ t('ui.failureReason') }}
               </div>
               <div class="mt-1 text-sm text-rose-600 whitespace-pre-wrap break-words">
                 {{ refund.failure_reason }}
@@ -96,11 +96,11 @@
           v-if="canFailRefund(refund)"
           class="rounded-xl border border-border/60 p-4 space-y-2"
         >
-          <Label>驳回原因</Label>
+          <Label>{{ t('ui.rejectionReason') }}</Label>
           <Input
             id="refund-fail-reason"
             v-model="failReason"
-            placeholder="请填写驳回原因"
+            :placeholder="t('ui.enterAReasonForRejection')"
           />
         </div>
 
@@ -109,11 +109,11 @@
           class="rounded-xl border border-border/60 p-4 space-y-3"
         >
           <div class="space-y-1.5">
-            <Label>网关退款号（可选）</Label>
+            <Label>{{ t('ui.gatewayRefundIdOptional') }}</Label>
             <Input v-model="gatewayRefundId" />
           </div>
           <div class="space-y-1.5">
-            <Label>打款凭证 / 参考号（可选）</Label>
+            <Label>{{ t('ui.transferReceiptReferenceNumberOptional') }}</Label>
             <Input v-model="payoutReference" />
           </div>
         </div>
@@ -125,7 +125,7 @@
             variant="outline"
             @click="$emit('close')"
           >
-            关闭
+            {{ t('ui.close') }}
           </Button>
           <Button
             v-if="canProcessRefund(refund.status)"
@@ -133,14 +133,14 @@
             :disabled="submitting"
             @click="$emit('process', refund)"
           >
-            {{ submitting ? '处理中...' : '处理退款' }}
+            {{ submitting ? t('ui.processingc1fd812') : t('ui.processRefund') }}
           </Button>
           <Button
             v-if="canCompleteRefund(refund.status)"
             :disabled="submitting"
             @click="$emit('complete', { gateway_refund_id: gatewayRefundId || undefined, payout_reference: payoutReference || undefined })"
           >
-            {{ submitting ? '提交中...' : '确认完成' }}
+            {{ submitting ? t('ui.submitting') : t('ui.confirmCompletion') }}
           </Button>
           <Button
             v-if="canFailRefund(refund)"
@@ -148,7 +148,7 @@
             :disabled="submitting"
             @click="$emit('fail', failReason.trim())"
           >
-            {{ submitting ? '提交中...' : '驳回退款' }}
+            {{ submitting ? t('ui.submitting') : t('ui.rejectRefund') }}
           </Button>
         </div>
       </div>
@@ -157,6 +157,8 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+
 import { ref, watch } from 'vue'
 import { X } from 'lucide-vue-next'
 import { Badge, Button, Input, Label } from '@/components/ui'
@@ -194,6 +196,8 @@ defineEmits<{
   complete: [payload: WalletRefundCompletePayload]
 }>()
 
+const { t } = useI18n()
+
 const failReason = ref('')
 const gatewayRefundId = ref('')
 const payoutReference = ref('')
@@ -204,4 +208,5 @@ watch(() => [props.open, props.refund?.id] as const, ([open]) => {
   gatewayRefundId.value = ''
   payoutReference.value = ''
 }, { immediate: true })
+
 </script>

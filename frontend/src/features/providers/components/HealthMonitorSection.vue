@@ -17,7 +17,7 @@
         class="flex items-center justify-center py-12"
       >
         <Loader2 class="w-6 h-6 animate-spin text-muted-foreground" />
-        <span class="ml-2 text-muted-foreground">加载中...</span>
+        <span class="ml-2 text-muted-foreground">{{ t('common.loading') }}</span>
       </div>
 
       <div
@@ -68,6 +68,8 @@
 </template>
 
 <script setup lang="ts" generic="T">
+import { useI18n } from '@/i18n'
+
 import { computed, onMounted, ref, shallowRef, watch, type Component } from 'vue'
 import { Loader2 } from 'lucide-vue-next'
 import Card from '@/components/ui/card.vue'
@@ -79,13 +81,9 @@ import {
   summarizeHealthMonitorItems,
   type HealthMonitorDetailTarget,
   type HealthMonitorSectionItem,
+  type HealthMonitorSectionData,
   type HealthMonitorSectionSummary,
 } from './health-monitor-utils'
-
-export interface HealthMonitorSectionData<T> {
-  items: HealthMonitorSectionItem<T>[]
-  generatedAt?: string | null
-}
 
 /**
  * 健康监控分区：负责回溯时间选择、加载态、空态与卡片网格。
@@ -107,6 +105,8 @@ const emit = defineEmits<{
   summaryUpdated: [summary: HealthMonitorSectionSummary]
 }>()
 
+const { t } = useI18n()
+
 const { error: showError } = useToast()
 
 const loading = ref(false)
@@ -124,7 +124,7 @@ async function loadMonitors() {
     generatedAt.value = data.generatedAt ?? null
     emit('summaryUpdated', summarizeHealthMonitorItems(items.value.map(item => item.monitor)))
   } catch (err: unknown) {
-    showError(parseApiError(err, props.errorMessage), '错误')
+    showError(parseApiError(err, props.errorMessage), t('ui.error'))
   } finally {
     loadingMonitors.value = false
   }
@@ -153,4 +153,5 @@ watch(lookbackHours, () => {
 onMounted(() => {
   refreshData()
 })
+
 </script>

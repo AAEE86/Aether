@@ -1,5 +1,6 @@
 import type { ProxyNode, ProxyNodeEvent } from '@/api/proxy-nodes'
-import type { Locale } from '@/i18n'
+import { translate, type Locale } from '@/i18n'
+import { translateMessage } from '@/i18n/messages'
 import { formatCompactNumber } from '@/utils/format'
 import { formatRegion } from '@/utils/region'
 
@@ -18,16 +19,10 @@ export function formatProxyNodeTime(iso: string | null, locale: Locale): string 
   const date = new Date(iso)
   const diff = (Date.now() - date.getTime()) / 1000
 
-  if (locale === 'en-US') {
-    if (diff < 60) return 'Just now'
-    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
-    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
-    return date.toLocaleDateString(locale, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
-  }
-
-  if (diff < 60) return '刚刚'
-  if (diff < 3600) return `${Math.floor(diff / 60)}分钟前`
-  if (diff < 86400) return `${Math.floor(diff / 3600)}小时前`
+  if (Number.isNaN(date.getTime())) return '-'
+  if (diff >= 0 && diff < 60) return translateMessage('feedback.proxy.justNow', locale)
+  if (diff >= 0 && diff < 3600) return translateMessage('feedback.proxy.minutesAgo', locale, { count: Math.floor(diff / 60) })
+  if (diff >= 0 && diff < 86400) return translateMessage('feedback.proxy.hoursAgo', locale, { count: Math.floor(diff / 3600) })
   return date.toLocaleDateString(locale, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
 }
 
@@ -63,9 +58,9 @@ export function proxyNodeVersion(node: ProxyNode): string {
 export function proxyNodeSchedulingBadge(node: ProxyNode): { label: string; variant: BadgeVariant } | null {
   switch (node.remote_config?.scheduling_state) {
     case 'draining':
-      return { label: '排空中', variant: 'warning' }
+      return { label: translate('ui.draining'), variant: 'warning' }
     case 'cordoned':
-      return { label: '已封锁', variant: 'dark' }
+      return { label: translate('ui.cordoned'), variant: 'dark' }
     default:
       return null
   }
@@ -82,15 +77,15 @@ export function proxyNodeStatusVariant(status: string): BadgeVariant {
 export function proxyNodeStatusLabel(node: ProxyNode): string {
   if (node.tunnel_mode && !node.is_manual) {
     switch (node.status) {
-      case 'online': return '隧道在线'
-      case 'offline': return '隧道离线'
+      case 'online': return translate('ui.tunnelOnline')
+      case 'offline': return translate('ui.tunnelOffline')
       default: return node.status
     }
   }
 
   switch (node.status) {
-    case 'online': return '在线'
-    case 'offline': return '离线'
+    case 'online': return translate('vscodex.devices.online')
+    case 'offline': return translate('vscodex.devices.offline')
     default: return node.status
   }
 }
@@ -98,23 +93,23 @@ export function proxyNodeStatusLabel(node: ProxyNode): string {
 export function proxyNodeStatusTitle(node: ProxyNode): string {
   if (node.tunnel_mode && !node.is_manual) {
     if (node.status === 'online') {
-      return '表示 gateway 仍能看到 tunnel/heartbeat，不代表默认探测站点一定可达'
+      return translate('ui.theGatewayCanStillSeeTheTunnelHeartbeatThisDoes')
     }
-    return 'gateway 当前未检测到可用 tunnel 连接'
+    return translate('ui.theGatewayCurrentlyDoesNotDetectAnAvailableTunnelConnection')
   }
 
   switch (node.status) {
-    case 'online': return '节点当前被标记为在线'
-    case 'offline': return '节点当前被标记为离线'
+    case 'online': return translate('ui.theNodeIsCurrentlyMarkedOnline')
+    case 'offline': return translate('ui.theNodeIsCurrentlyMarkedOffline')
     default: return node.status
   }
 }
 
 export function proxyNodeEventTypeLabel(type: string): string {
   switch (type) {
-    case 'connected': return '连接'
-    case 'disconnected': return '断开'
-    case 'error': return '错误'
+    case 'connected': return translate('ui.connected')
+    case 'disconnected': return translate('ui.disconnected')
+    case 'error': return translate('ui.error')
     default: return type
   }
 }

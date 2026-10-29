@@ -1,3 +1,4 @@
+import { translate } from '@/i18n'
 import { ref, computed, type Ref } from 'vue'
 import { CalendarCheck, RefreshCw } from 'lucide-vue-next'
 import { useToast } from '@/composables/useToast'
@@ -49,9 +50,9 @@ export function useScheduledTasks(systemConfig: Ref<SystemConfig>) {
         enabled,
         '是否启用 Provider 自动签到任务'
       )
-      success(enabled ? '已启用自动签到' : '已禁用自动签到')
+      success(enabled ? translate('ui.automaticCheckInEnabled') : translate('ui.automaticCheckInDisabled'))
     } catch (err) {
-      error('保存配置失败')
+      error(translate('ui.failedToSaveConfiguration'))
       log.error('保存自动签到配置失败:', err)
       systemConfig.value.enable_provider_checkin = previousValue
     }
@@ -66,9 +67,9 @@ export function useScheduledTasks(systemConfig: Ref<SystemConfig>) {
         enabled,
         '是否启用 OAuth Token 自动刷新任务'
       )
-      success(enabled ? '已启用 OAuth Token 自动刷新' : '已禁用 OAuth Token 自动刷新')
+      success(enabled ? translate('ui.automaticOauthTokenRefreshEnabled') : translate('ui.automaticOauthTokenRefreshDisabled'))
     } catch (err) {
-      error('保存配置失败')
+      error(translate('ui.failedToSaveConfiguration'))
       log.error('保存 OAuth Token 自动刷新配置失败:', err)
       systemConfig.value.enable_oauth_token_refresh = previousValue
     }
@@ -83,7 +84,7 @@ export function useScheduledTasks(systemConfig: Ref<SystemConfig>) {
   async function handleCheckinTimeSave() {
     const newTime = systemConfig.value.provider_checkin_time
     if (!newTime || !/^\d{2}:\d{2}$/.test(newTime)) {
-      error('请输入有效的时间格式 (HH:MM)')
+      error(translate('ui.enterAValidTimeHhMm'))
       return
     }
 
@@ -97,7 +98,7 @@ export function useScheduledTasks(systemConfig: Ref<SystemConfig>) {
       previousCheckinTime.value = newTime
       success(`签到时间已设置为 ${newTime}`)
     } catch (err) {
-      error('保存签到时间失败')
+      error(translate('ui.failedToSaveCheckInTime'))
       log.error('保存签到时间失败:', err)
     } finally {
       checkinConfigLoading.value = false
@@ -109,8 +110,8 @@ export function useScheduledTasks(systemConfig: Ref<SystemConfig>) {
     {
       id: 'provider-checkin',
       icon: CalendarCheck,
-      title: 'Provider 自动签到',
-      description: '自动执行已配置 Provider 的签到任务',
+      get title() { return translate('ui.providerAutoCheckIn') },
+      get description() { return translate('ui.automaticallyRunConfiguredProviderCheckInTaskse7a5bcc') },
       enabled: systemConfig.value.enable_provider_checkin,
       hasTimeConfig: true,
       hour: checkinHour.value,
@@ -125,8 +126,8 @@ export function useScheduledTasks(systemConfig: Ref<SystemConfig>) {
     {
       id: 'oauth-token-refresh',
       icon: RefreshCw,
-      title: 'OAuth Token 自动刷新',
-      description: '主动刷新即将过期的 OAuth Token（动态调度）',
+      get title() { return translate('ui.automaticOauthTokenRefresh') },
+      get description() { return translate('ui.proactivelyRefreshOauthTokensThatAreAboutToExpireDynamic7e630c9') },
       enabled: systemConfig.value.enable_oauth_token_refresh,
       hasTimeConfig: false,
       hour: '',

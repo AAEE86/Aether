@@ -1,8 +1,8 @@
 <template>
   <Dialog
     :model-value="open"
-    :title="isEditMode ? '编辑模型' : '创建统一模型'"
-    :description="isEditMode ? '修改模型配置和价格信息' : ''"
+    :title="isEditMode ? t('ui.editModel') : t('guide.nav.concepts.createModel')"
+    :description="isEditMode ? t('ui.editModelConfigurationAndPricing') : ''"
     :icon="isEditMode ? SquarePen : Layers"
     :size="isEditMode ? '4xl' : '3xl'"
     :z-index="zIndex"
@@ -57,10 +57,10 @@
           </div>
           <div class="min-w-0 flex-1">
             <div class="text-xs text-muted-foreground">
-              {{ selectedModel ? `已加载 ${selectedModel.providerName} 预设` : '手动填写模式' }}
+              {{ selectedModel ? t('ui.loadedTheValuePreset', { name: selectedModel.providerName }) : t('ui.manualEntry') }}
             </div>
             <div class="truncate text-sm font-medium">
-              {{ selectedModel ? selectedModel.modelName : '填写模型详细信息' }}
+              {{ selectedModel ? selectedModel.modelName : t('ui.enterModelDetails') }}
             </div>
             <div
               v-if="selectedModel"
@@ -77,7 +77,7 @@
               class="shrink-0"
               @click="reopenPresetPanel"
             >
-              返回选择模型
+              {{ t('ui.backToModelSelection') }}
             </Button>
           </div>
         </div>
@@ -91,14 +91,14 @@
             class="space-y-3 rounded-lg border bg-card p-4"
           >
             <h4 class="font-medium text-sm">
-              基本信息
+              {{ t('ui.basicInformation') }}
             </h4>
             <div class="grid grid-cols-2 gap-3">
               <div class="space-y-1.5">
                 <Label
                   for="model-display-name"
                   class="text-xs"
-                >名称 *</Label>
+                >{{ t('ui.name') }}</Label>
                 <Input
                   id="model-display-name"
                   v-model="form.display_name"
@@ -110,7 +110,7 @@
                 <Label
                   for="model-name"
                   class="text-xs"
-                >模型ID *</Label>
+                >{{ t('ui.modelId5f9dbab') }}</Label>
                 <Input
                   id="model-name"
                   v-model="form.name"
@@ -124,11 +124,11 @@
               <Label
                 for="model-description"
                 class="text-xs"
-              >描述</Label>
+              >{{ t('ui.descriptiondc2ba46') }}</Label>
               <Input
                 id="model-description"
                 :model-value="getConfigInputValue('description')"
-                placeholder="简短描述此模型的特点"
+                :placeholder="t('ui.brieflyDescribeTheModel')"
                 @update:model-value="(v) => setConfigField('description', v || undefined)"
               />
             </div>
@@ -137,13 +137,13 @@
                 <Label
                   for="model-output-limit"
                   class="text-xs"
-                >最大输出 Token</Label>
+                >{{ t('ui.maximumOutputTokens') }}</Label>
                 <Input
                   id="model-output-limit"
                   :model-value="getConfigInputValue('output_limit')"
                   type="number"
                   min="1"
-                  placeholder="如 8192"
+                  :placeholder="t('ui.eG8192')"
                   @update:model-value="(v) => setConfigField('output_limit', parseNumberInput(v, { allowFloat: false }))"
                 />
               </div>
@@ -151,13 +151,13 @@
                 <Label
                   for="model-context-limit"
                   class="text-xs"
-                >上下文窗口</Label>
+                >{{ t('ui.contextWindow') }}</Label>
                 <Input
                   id="model-context-limit"
                   :model-value="getConfigInputValue('context_limit')"
                   type="number"
                   min="1"
-                  placeholder="如 200000"
+                  :placeholder="t('ui.eG200000')"
                   @update:model-value="(v) => setConfigField('context_limit', parseNumberInput(v, { allowFloat: false }))"
                 />
               </div>
@@ -174,7 +174,7 @@
                     Embedding
                   </div>
                   <p class="text-xs text-muted-foreground">
-                    标记为 Embeddings 模型，并使用独立的 embedding API 格式，不按 Chat 模型处理。
+                    {{ t('ui.markAsAnEmbeddingModelUsingADedicatedEmbeddingApi') }}
                   </p>
                   <div
                     v-if="isEmbeddingEnabled"
@@ -197,7 +197,7 @@
           >
             <div class="flex items-center justify-between gap-2">
               <h4 class="font-medium text-sm">
-                选择计费模式
+                {{ t('ui.selectBillingMode') }}
               </h4>
               <Popover
                 v-if="isEditMode"
@@ -217,7 +217,7 @@
                       : currentOnlinePricingSource
                         ? t('models.pricingSource.editCurrentTitle', { provider: currentOnlinePricingSource.provider_name })
                         : t('models.pricingSource.editChooseTitle')"
-                    aria-label="同步最新在线价格"
+                    :aria-label="t('ui.syncLatestOnlinePricing')"
                     data-testid="sync-online-pricing"
                     @click="syncOnlinePricing"
                   >
@@ -241,10 +241,10 @@
                     <div class="flex items-center justify-between gap-3">
                       <div class="min-w-0">
                         <div class="truncate text-xs font-medium">
-                          选择在线价格来源
+                          {{ t('models.management.batch.providerPlaceholder') }}
                         </div>
                         <div class="truncate text-[10px] text-muted-foreground">
-                          {{ props.model?.display_name || props.model?.name || '当前模型' }}
+                          {{ props.model?.display_name || props.model?.name || t('ui.currentModel') }}
                         </div>
                       </div>
                       <Loader2
@@ -257,13 +257,13 @@
                       v-if="syncingOnlinePricing && onlinePricingCandidates.length === 0"
                       class="flex items-center justify-center py-5 text-xs text-muted-foreground"
                     >
-                      正在刷新在线价格...
+                      {{ t('ui.refreshingOnlinePricing') }}
                     </div>
                     <div
                       v-else
                       class="max-h-64 space-y-1.5 overflow-y-auto pr-0.5"
                       role="radiogroup"
-                      aria-label="在线价格来源"
+                      :aria-label="t('ui.onlinePricingSource')"
                       @keydown="handleOnlinePricingSourcePopoverKeydown"
                     >
                       <button
@@ -308,8 +308,8 @@
                           v-if="isOnlinePricingCandidateSyncable(candidate)"
                           class="shrink-0 text-right text-[9px] tabular-nums text-muted-foreground"
                         >
-                          <span class="block">输入 ${{ formatModelPrice(candidate.inputPrice) }}/M</span>
-                          <span class="block">输出 ${{ formatModelPrice(candidate.outputPrice) }}/M</span>
+                          <span class="block">{{ t('ui.input4b77c7d') }}{{ formatModelPrice(candidate.inputPrice) }}/M</span>
+                          <span class="block">{{ t('ui.output') }}{{ formatModelPrice(candidate.outputPrice) }}/M</span>
                         </span>
                         <span
                           class="flex h-4 w-4 shrink-0 items-center justify-center rounded-full border"
@@ -327,7 +327,7 @@
                         v-if="onlinePricingCandidates.length === 0"
                         class="py-4 text-center text-xs text-muted-foreground"
                       >
-                        暂无可用在线价格来源
+                        {{ t('ui.noOnlinePricingSourcesAvailable') }}
                       </div>
                     </div>
 
@@ -342,7 +342,7 @@
                         @keydown="handleOnlinePricingSourcePopoverKeydown"
                         @click="closeOnlinePricingSourcePopover"
                       >
-                        取消
+                        {{ t('common.cancel') }}
                       </Button>
                       <Button
                         type="button"
@@ -358,7 +358,7 @@
                           v-if="syncingOnlinePricing"
                           class="mr-1.5 h-3.5 w-3.5 animate-spin"
                         />
-                        {{ syncingOnlinePricing ? '同步中...' : '同步此来源' }}
+                        {{ syncingOnlinePricing ? t('models.management.batch.syncing') : t('ui.syncThisSource') }}
                       </Button>
                     </div>
                   </div>
@@ -374,13 +374,13 @@
                   Token
                 </TabsTrigger>
                 <TabsTrigger value="request">
-                  按次
+                  {{ t('ui.perRequest') }}
                 </TabsTrigger>
                 <TabsTrigger value="image">
-                  图片
+                  {{ t('ui.image') }}
                 </TabsTrigger>
                 <TabsTrigger value="video">
-                  视频
+                  {{ t('ui.video') }}
                 </TabsTrigger>
               </TabsList>
 
@@ -402,18 +402,18 @@
                 class="pt-2"
               >
                 <div class="rounded-lg border bg-muted/20 p-4 space-y-2">
-                  <Label class="text-xs">每次请求价格（美元）</Label>
+                  <Label class="text-xs">{{ t('ui.pricePerRequestUsd') }}</Label>
                   <Input
                     :model-value="form.default_price_per_request ?? ''"
                     type="number"
                     step="0.001"
                     min="0"
                     class="max-w-48"
-                    placeholder="如 0.01"
+                    :placeholder="t('ui.eG001')"
                     @update:model-value="(v) => form.default_price_per_request = parseNumberInput(v, { allowFloat: true })"
                   />
                   <p class="text-xs text-muted-foreground">
-                    按每次 API 请求收取固定费用，可与 Token 计费同时使用。
+                    {{ t('ui.chargeAFixedAmountPerApiRequestOptionallyCombinedWith') }}
                   </p>
                 </div>
               </TabsContent>
@@ -425,10 +425,10 @@
                 <div class="space-y-3 rounded-lg border bg-muted/20 p-4">
                   <div>
                     <div class="text-sm font-medium">
-                      视频计费（分辨率 × 时长）
+                      {{ t('ui.videoPricingResolutionDuration') }}
                     </div>
                     <p class="mt-1 text-xs text-muted-foreground">
-                      根据输出分辨率配置每秒视频价格。
+                      {{ t('ui.setVideoPricingPerSecondByOutputResolution') }}
                     </p>
                   </div>
 
@@ -440,7 +440,7 @@
                       class="h-7 text-xs"
                       @click="fillVideoResolutionPricePreset('common')"
                     >
-                      通用
+                      {{ t('ui.general') }}
                     </Button>
                     <Button
                       type="button"
@@ -467,8 +467,7 @@
                       class="h-7 text-xs"
                       @click="addVideoResolutionPriceRow"
                     >
-                      <Plus class="w-3.5 h-3.5 mr-0.5" />
-                      自定义
+                      <Plus class="w-3.5 h-3.5 mr-0.5" /> {{ t('ui.custom4eafa9e') }}
                     </Button>
                   </div>
 
@@ -477,8 +476,8 @@
                     class="rounded-lg border border-border overflow-hidden"
                   >
                     <div class="grid grid-cols-[1fr_1fr_32px] gap-0 text-xs text-muted-foreground bg-muted/50 px-3 py-1.5 border-b border-border">
-                      <span>分辨率</span>
-                      <span>单价（$/秒）</span>
+                      <span>{{ t('ui.resolution') }}</span>
+                      <span>{{ t('ui.unitPriceSecond') }}</span>
                       <span />
                     </div>
                     <div class="divide-y divide-border">
@@ -490,7 +489,7 @@
                         <Input
                           v-model="row.resolution"
                           class="h-7 text-sm"
-                          placeholder="如 720p"
+                          :placeholder="t('ui.eG720p')"
                         />
                         <Input
                           :model-value="row.price_per_second ?? ''"
@@ -506,7 +505,7 @@
                           variant="ghost"
                           size="icon"
                           class="h-7 w-7"
-                          title="删除"
+                          :title="t('ui.delete')"
                           @click="removeVideoResolutionPriceRow(idx)"
                         >
                           <Trash2 class="w-3.5 h-3.5" />
@@ -518,7 +517,7 @@
                     v-else
                     class="rounded-lg border border-dashed py-8 text-center text-xs text-muted-foreground"
                   >
-                    选择一个价格预设或添加自定义分辨率
+                    {{ t('ui.selectAPricingPresetOrAddACustomResolution') }}
                   </div>
                 </div>
               </TabsContent>
@@ -534,7 +533,7 @@
         variant="outline"
         @click="handleCancel"
       >
-        取消
+        {{ t('common.cancel') }}
       </Button>
       <Button
         v-if="!isEditMode && !presetPanelCollapsed"
@@ -542,7 +541,7 @@
         variant="outline"
         @click="enterManualEntryMode"
       >
-        手动填写
+        {{ t('ui.enterManually') }}
       </Button>
       <Button
         v-if="isEditMode || presetPanelCollapsed"
@@ -553,7 +552,7 @@
           v-if="submitting"
           class="w-4 h-4 mr-2 animate-spin"
         />
-        {{ isEditMode ? '保存' : '添加' }}
+        {{ isEditMode ? t('ui.save') : t('ui.add') }}
       </Button>
       <Button
         v-if="selectedModel && !isEditMode && presetPanelCollapsed"
@@ -561,7 +560,7 @@
         variant="ghost"
         @click="clearSelection"
       >
-        清空
+        {{ t('ui.clear1ef3de0') }}
       </Button>
     </template>
   </Dialog>
@@ -969,7 +968,6 @@ function fillVideoResolutionPricePreset(preset: 'common' | 'sora' | 'veo') {
   }))
 }
 
-
 async function loadExistingModels() {
   const models: GlobalModelResponse[] = []
   let total = 0
@@ -988,7 +986,7 @@ async function loadModelsCatalog() {
     allModelsCache.value = await getModelsDevList(false)
   } catch (err: unknown) {
     allModelsCache.value = []
-    catalogLoadError.value = parseApiError(err, '外部模型目录暂时不可用')
+    catalogLoadError.value = parseApiError(err, t('ui.theExternalModelCatalogIsTemporarilyUnavailable'))
     log.error('Failed to load online models:', err)
   }
 }
@@ -1104,9 +1102,9 @@ function formatUnsupportedPricingFields(
   fields: ModelsDevModelItem['pricingUnsupportedFields'],
 ): string {
   const labels = {
-    reasoning: '推理 Token',
-    input_audio: '输入音频 Token',
-    output_audio: '输出音频 Token',
+    get reasoning() { return t('models.pricingField.reasoning') },
+    get input_audio() { return t('models.pricingField.inputAudio') },
+    get output_audio() { return t('models.pricingField.outputAudio') },
   }
   return (fields ?? []).map(field => labels[field]).join('、')
 }
@@ -1138,7 +1136,7 @@ function resolveOnlinePricingModel(
   }
   if (candidates.length === 1) return candidates[0]
   if (candidates.length === 0) {
-    throw new Error('models.dev 未找到该模型的在线价格')
+    throw new Error(t('ui.noOnlinePricingFoundForThisModelOnModelsDev'))
   }
   return null
 }
@@ -1151,7 +1149,7 @@ function getOnlinePricingCandidateUnavailableReason(model: ModelsDevModelItem): 
   if (model.pricingUnsupportedFields?.length) {
     return `不支持：${formatUnsupportedPricingFields(model.pricingUnsupportedFields)}`
   }
-  if (!model.tieredPricing?.tiers?.length) return '在线目录未提供 Token 价格'
+  if (!model.tieredPricing?.tiers?.length) return t('ui.theOnlineCatalogDoesNotProvideTokenPricing')
   return ''
 }
 
@@ -1240,7 +1238,7 @@ async function applyOnlinePricingModel(onlineModel: ModelsDevModelItem) {
     )
   }
   if (!onlineModel.tieredPricing?.tiers?.length) {
-    throw new Error('在线目录未提供该模型的价格配置')
+    throw new Error(t('ui.theOnlineCatalogDoesNotProvidePricingForThisModel'))
   }
 
   const pricing = cloneTieredPricingConfig(onlineModel.tieredPricing)
@@ -1300,7 +1298,7 @@ async function confirmOnlinePricingSource() {
     synced = true
   } catch (err: unknown) {
     log.error('同步在线模型价格失败:', err)
-    showError(parseApiError(err, '同步在线价格失败'), '同步失败')
+    showError(parseApiError(err, t('ui.failedToSyncOnlinePricing')), t('models.pricingSource.syncFailed'))
   } finally {
     syncingOnlinePricing.value = false
     if (synced) resetOnlinePricingSourceSelection()
@@ -1328,7 +1326,7 @@ async function syncOnlinePricing() {
   } catch (err: unknown) {
     resetOnlinePricingSourceSelection()
     log.error('同步在线模型价格失败:', err)
-    showError(parseApiError(err, '同步在线价格失败'), '同步失败')
+    showError(parseApiError(err, t('ui.failedToSyncOnlinePricing')), t('models.pricingSource.syncFailed'))
   } finally {
     syncingOnlinePricing.value = false
   }
@@ -1418,20 +1416,20 @@ const autoFillMissingCachePrices = computed(() => (
 async function handleSubmit() {
   if (syncingOnlinePricing.value) return
   if (!form.value.name || !form.value.display_name) {
-    showError('请填写模型ID和名称')
+    showError(t('ui.enterTheModelIdAndName'))
     return
   }
 
   const pricingValidationError = tieredPricingEditorRef.value?.getValidationError()
   if (pricingValidationError) {
-    showError(pricingValidationError, '价格配置错误')
+    showError(pricingValidationError, t('ui.invalidPricingConfiguration'))
     return
   }
 
   const finalTieredPricing = tieredPricingEditorRef.value?.getFinalPricing() ?? tieredPricing.value
 
   if (!finalTieredPricing?.tiers?.length) {
-    showError('请配置至少一个价格阶梯')
+    showError(t('ui.configureAtLeastOnePricingTier'))
     return
   }
 
@@ -1450,7 +1448,7 @@ async function handleSubmit() {
     if (isEditMode.value && props.model) {
       const updateData = buildGlobalModelUpdatePayload(form.value, finalTieredPricing)
       await updateGlobalModel(props.model.id, updateData)
-      success('模型更新成功')
+      success(t('ui.modelUpdated'))
     } else {
       const createData = buildGlobalModelCreatePayload(form.value, finalTieredPricing)
       if (selectedModel.value) {
@@ -1467,7 +1465,7 @@ async function handleSubmit() {
           provider_name: selectedModel.value.providerName,
         })
       }
-      success('模型创建成功')
+      success(t('ui.modelCreated'))
       clearSelection()
       emit('success')
       return
@@ -1475,7 +1473,7 @@ async function handleSubmit() {
     emit('update:open', false)
     emit('success')
   } catch (err: unknown) {
-    showError(parseApiError(err, isEditMode.value ? '更新失败' : '创建失败'), isEditMode.value ? '更新失败' : '创建失败')
+    showError(parseApiError(err, isEditMode.value ? t('update.error.updateFailed') : t('ui.createFailed')), isEditMode.value ? t('update.error.updateFailed') : t('ui.createFailed'))
   } finally {
     submitting.value = false
   }

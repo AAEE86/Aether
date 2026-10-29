@@ -3,7 +3,7 @@
     <div class="flex flex-col gap-3 sm:hidden">
       <div class="flex items-center justify-between">
         <h3 class="text-base font-semibold">
-          {{ legacyT('代理节点') }}
+          {{ t('ui.proxyNodes23f1b6a') }}
         </h3>
         <div class="flex items-center gap-2">
           <Button
@@ -12,7 +12,7 @@
             class="h-7 text-xs"
             @click="$emit('open-distribution')"
           >
-            {{ legacyT('均分') }}
+            {{ t('ui.distribute') }}
           </Button>
           <Button
             size="sm"
@@ -20,7 +20,7 @@
             class="h-7 text-xs"
             @click="$emit('open-batch-upgrade')"
           >
-            {{ legacyT('升级') }}
+            {{ t('ui.upgrade') }}
           </Button>
           <Button
             size="sm"
@@ -28,7 +28,7 @@
             @click="$emit('open-add')"
           >
             <Plus class="w-3 h-3 mr-1" />
-            {{ legacyT('添加') }}
+            {{ t('ui.add') }}
           </Button>
           <RefreshButton
             :loading="loading"
@@ -42,14 +42,14 @@
           <Input
             v-model="searchValue"
             type="text"
-            :placeholder="legacyT('搜索...')"
+            :placeholder="t('ui.searchc304ad3')"
             class="w-full pl-8 pr-3 h-8 text-sm bg-background/50 border-border/60"
           />
         </div>
         <div class="min-w-0 flex-1">
           <Select v-model="statusValue">
             <SelectTrigger class="w-full h-8 text-xs border-border/60">
-              <SelectValue :placeholder="legacyT('状态')" />
+              <SelectValue :placeholder="t('ui.status6320b4a')" />
             </SelectTrigger>
             <SelectContent>
               <SelectItem
@@ -57,7 +57,7 @@
                 :key="option.value"
                 :value="option.value"
               >
-                {{ legacyT(option.label) }}
+                {{ option.label }}
               </SelectItem>
             </SelectContent>
           </Select>
@@ -67,7 +67,7 @@
 
     <div class="hidden sm:flex items-center justify-between gap-4">
       <h3 class="text-base font-semibold">
-        {{ legacyT('代理节点') }}
+        {{ t('ui.proxyNodes23f1b6a') }}
       </h3>
       <div class="flex items-center gap-2">
         <div class="relative">
@@ -75,7 +75,7 @@
           <Input
             v-model="searchValue"
             type="text"
-            :placeholder="legacyT('搜索...')"
+            :placeholder="t('ui.searchc304ad3')"
             class="w-48 pl-8 pr-3 h-8 text-sm bg-background/50 border-border/60"
           />
         </div>
@@ -83,7 +83,7 @@
         <div class="xl:hidden">
           <Select v-model="statusValue">
             <SelectTrigger class="w-28 h-8 text-xs border-border/60">
-              <SelectValue :placeholder="legacyT('全部状态')" />
+              <SelectValue :placeholder="t('ui.allStatuses')" />
             </SelectTrigger>
             <SelectContent>
               <SelectItem
@@ -91,7 +91,7 @@
                 :key="option.value"
                 :value="option.value"
               >
-                {{ legacyT(option.label) }}
+                {{ option.label }}
               </SelectItem>
             </SelectContent>
           </Select>
@@ -104,7 +104,7 @@
           @click="$emit('open-distribution')"
         >
           <Shuffle class="w-3.5 h-3.5 mr-1.5" />
-          {{ legacyT('号池均分') }}
+          {{ t('ui.distributeEvenlyAcrossAccountPools') }}
         </Button>
         <Button
           variant="outline"
@@ -112,13 +112,13 @@
           class="h-8 text-xs"
           @click="$emit('open-batch-upgrade')"
         >
-          {{ legacyT('批量升级') }}
+          {{ t('ui.batchUpgrade') }}
         </Button>
         <Button
           variant="ghost"
           size="icon"
           class="h-8 w-8"
-          :title="legacyT('手动添加')"
+          :title="t('ui.addManually')"
           @click="$emit('open-add')"
         >
           <Plus class="w-3.5 h-3.5" />
@@ -155,7 +155,7 @@ const emit = defineEmits<{
   refresh: []
 }>()
 
-const { legacyT } = useI18n()
+const { t } = useI18n()
 
 const searchValue = computed({
   get: () => props.searchQuery,

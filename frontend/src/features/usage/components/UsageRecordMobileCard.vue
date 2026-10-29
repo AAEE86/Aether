@@ -17,8 +17,8 @@
             v-if="record.chat_pii_redaction"
             data-usage-attempt-marker="pii-redaction"
             class="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400 flex-shrink-0"
-            title="此请求触发了敏感信息保护：发送给上游的内容已替换为占位符"
-            aria-label="触发敏感信息保护"
+            :title="t('ui.thisRequestTriggeredSensitiveInformationProtectionTheContentSentUpstream')"
+            :aria-label="t('ui.sensitiveInformationProtectionTriggered')"
           />
           <!-- 状态 Badge -->
           <Badge
@@ -26,28 +26,28 @@
             variant="destructive"
             class="whitespace-nowrap text-[10px] px-1.5 h-4 leading-4 inline-flex items-center flex-shrink-0"
           >
-            失败
+            {{ t('ui.failed28384d7') }}
           </Badge>
           <Badge
             v-else-if="getDisplayStatus(record) === 'pending'"
             variant="outline"
             class="whitespace-nowrap animate-pulse border-muted-foreground/30 text-muted-foreground text-[10px] px-1.5 h-4 leading-4 inline-flex items-center flex-shrink-0"
           >
-            等待
+            {{ t('ui.waiting251bc40') }}
           </Badge>
           <Badge
             v-else-if="getDisplayStatus(record) === 'streaming'"
             variant="outline"
             class="whitespace-nowrap animate-pulse border-primary/50 text-primary text-[10px] px-1.5 h-4 leading-4 inline-flex items-center flex-shrink-0"
           >
-            传输
+            {{ t('ui.transfer') }}
           </Badge>
           <Badge
             v-else-if="record.status === 'cancelled'"
             variant="outline"
             class="whitespace-nowrap border-amber-500/50 text-amber-600 dark:text-amber-400 text-[10px] px-1.5 h-4 leading-4 inline-flex items-center flex-shrink-0"
           >
-            取消
+            {{ t('common.cancel') }}
           </Badge>
           <Badge
             v-else-if="isUsageWebSocket(record)"
@@ -123,8 +123,8 @@
         v-if="record.has_fallback"
         data-usage-attempt-marker="fallback"
         class="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 flex-shrink-0"
-        title="此请求发生了 Provider 故障转移"
-        aria-label="发生 Provider 故障转移"
+        :title="t('ui.thisRequestFailedOverToAnotherProvider')"
+        :aria-label="t('ui.providerFailover')"
       />
       <Ban
         v-if="record.has_skipped_candidate && !record.has_fallback"
@@ -137,8 +137,8 @@
         v-if="record.has_retry"
         data-usage-attempt-marker="retry"
         class="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 flex-shrink-0"
-        title="此请求发生了重试"
-        aria-label="发生重试"
+        :title="t('ui.thisRequestWasRetried')"
+        :aria-label="t('ui.retried')"
       />
     </div>
 
@@ -148,7 +148,7 @@
         class="min-w-0 truncate whitespace-nowrap tabular-nums text-foreground"
         :title="getRecordPerformanceTitle(record)"
       >
-        <span class="text-muted-foreground">耗时&amp;速度</span>
+        <span class="text-muted-foreground">{{ t('ui.durationSpeed') }}</span>
         <template v-if="getDisplayStatus(record) === 'pending' || getDisplayStatus(record) === 'streaming'">
           <span class="ml-1">{{ formatRecordDurationSeconds(record.first_byte_time_ms) }}</span>
           <span class="text-muted-foreground"> / </span>
@@ -185,14 +185,14 @@
           v-else
           data-usage-unavailable="tokens"
           class="ml-1 text-muted-foreground"
-          title="上游未提供可验证的 token/费用用量"
-        >不可用</span>
+          :title="t('ui.theUpstreamDidNotProvideVerifiableTokenOrCostUsage')"
+        >{{ t('ui.unavailable460b357') }}</span>
         <template v-if="record.usage_available !== false && hasRecordCacheTokens(record)">
           <span class="text-muted-foreground"> | </span>
           <span>{{ formatOptionalTokens(getRecordCacheReadTokens(record)) }} / {{ formatOptionalTokens(getRecordCacheCreationTokens(record)) }}</span>
         </template>
         <template v-if="record.usage_available !== false && ((record.input_audio_tokens || 0) > 0 || (record.output_audio_tokens || 0) > 0)">
-          <span class="text-muted-foreground"> | 音频 </span>
+          <span class="text-muted-foreground"> {{ t('ui.audio') }} </span>
           <span>{{ formatOptionalTokens(record.input_audio_tokens) }} / {{ formatOptionalTokens(record.output_audio_tokens) }}</span>
         </template>
       </span>
@@ -201,6 +201,8 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+
 import { ShieldCheck, Shuffle, Ban, RefreshCcw } from 'lucide-vue-next'
 import { Badge } from '@/components/ui'
 import { formatTokens } from '@/utils/format'
@@ -248,6 +250,8 @@ defineEmits<{
   showDetail: [id: string]
 }>()
 
+const { t } = useI18n()
+
 const { isDark } = useDarkMode()
 
 function streamBadgeVariant(isStream: boolean): 'secondary' | 'outline' {
@@ -256,4 +260,5 @@ function streamBadgeVariant(isStream: boolean): 'secondary' | 'outline' {
   }
   return isStream ? 'secondary' : 'outline'
 }
+
 </script>

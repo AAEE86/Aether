@@ -2,16 +2,14 @@
   <Dialog
     :open="open"
     size="lg"
-    title="立即清理请求记录"
-    description="默认按当前分级保留策略执行，也可以选择指定范围。操作不可逆。"
+    :title="t('ui.cleanUpRequestRecordsNow')"
+    :description="t('ui.usesTheCurrentTieredRetentionPolicyByDefaultYouCan')"
     :persistent="isLocked"
     @update:open="handleOpenChange"
   >
     <div class="px-4 sm:px-6 py-4 space-y-4">
       <div>
-        <Label class="block text-sm font-medium">
-          清理方式
-        </Label>
+        <Label class="block text-sm font-medium"> {{ t('ui.cleanupMethod') }} </Label>
         <div class="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-2">
           <button
             v-for="item in modeOptions"
@@ -32,28 +30,24 @@
         <Label
           for="manual-cleanup-older-than-days"
           class="block text-sm font-medium"
-        >
-          清理 N 天前的记录
-        </Label>
+        > {{ t('ui.cleanUpRecordsOlderThanNDays') }} </Label>
         <Input
           id="manual-cleanup-older-than-days"
           :model-value="olderThanDays ?? ''"
           type="number"
           min="1"
-          placeholder="例如 30"
+          :placeholder="t('ui.eG30')"
           class="mt-1"
           :disabled="isLocked"
           @update:model-value="handleDaysChange"
         />
         <p class="mt-1 text-xs text-muted-foreground">
-          该值会与当前策略取更保守的时间点，不会清理比策略更新的数据。
+          {{ t('ui.theOlderCutoffIsUsedWhenComparedWithTheCurrent') }}
         </p>
       </div>
 
       <div>
-        <Label class="block text-sm font-medium">
-          清理范围
-        </Label>
+        <Label class="block text-sm font-medium"> {{ t('ui.cleanupScope') }} </Label>
         <div class="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
           <label
             v-for="target in targetOptions"
@@ -76,7 +70,7 @@
           v-if="mode === 'before_now'"
           class="mt-2 text-xs text-amber-600"
         >
-          当前时刻之前模式只允许清理详细请求体和压缩请求体，不会清请求头或整条记录。
+          {{ t('ui.theCurrentTimeCutoffOnlyClearsDetailedAndCompressedBodies') }}
         </p>
         <p
           v-if="targetError"
@@ -89,7 +83,7 @@
       <div class="rounded-md border border-border bg-muted/30 px-4 py-3">
         <div class="flex items-center justify-between">
           <h4 class="text-sm font-medium">
-            预计影响
+            {{ t('ui.estimatedImpact') }}
           </h4>
           <button
             v-if="!previewLoading"
@@ -98,14 +92,12 @@
             :disabled="isLocked"
             @click="loadPreview"
           >
-            刷新预估
+            {{ t('ui.refreshEstimate') }}
           </button>
           <span
             v-else
             class="text-xs text-muted-foreground"
-          >
-            正在计算…
-          </span>
+          > {{ t('ui.calculating') }} </span>
         </div>
         <div
           v-if="previewError"
@@ -117,19 +109,19 @@
           v-else-if="preview"
           class="mt-2 grid grid-cols-2 gap-y-1 gap-x-4 text-xs text-muted-foreground"
         >
-          <div>详细记录待压缩</div>
+          <div>{{ t('ui.detailedRecordsToCompress') }}</div>
           <div class="text-right text-foreground">
             {{ formatCount(preview.counts.detail) }}
           </div>
-          <div>压缩记录待清体</div>
+          <div>{{ t('ui.compressedBodiesToClear') }}</div>
           <div class="text-right text-foreground">
             {{ formatCount(preview.counts.compressed) }}
           </div>
-          <div>请求头待清空</div>
+          <div>{{ t('ui.headersToClear') }}</div>
           <div class="text-right text-foreground">
             {{ formatCount(preview.counts.header) }}
           </div>
-          <div>整条记录待删除</div>
+          <div>{{ t('ui.recordsToDelete') }}</div>
           <div class="text-right text-destructive font-medium">
             {{ formatCount(preview.counts.log) }}
           </div>
@@ -138,7 +130,7 @@
           v-else-if="!previewLoading"
           class="mt-2 text-xs text-muted-foreground"
         >
-          尚未计算预估数据
+          {{ t('ui.noEstimateAvailableYet') }}
         </div>
       </div>
 
@@ -149,7 +141,7 @@
         <div class="flex items-center justify-between gap-3">
           <div class="min-w-0">
             <div class="text-sm font-medium">
-              {{ activeTask?.message || '请求记录清理失败' }}
+              {{ activeTask?.message || t('ui.failedToCleanUpRequestRecords') }}
             </div>
             <div class="mt-1 text-xs text-muted-foreground">
               {{ activeTask ? cleanupStatusLabel(activeTask.status) : taskError }}
@@ -185,9 +177,7 @@
         <Label
           for="manual-cleanup-confirm-phrase"
           class="block text-sm font-medium"
-        >
-          输入「{{ confirmPhrase }}」以确认清理
-        </Label>
+        > {{ t('ui.type') }}{{ confirmPhrase }}{{ t('ui.toConfirmCleanup') }} </Label>
         <Input
           id="manual-cleanup-confirm-phrase"
           :model-value="typedPhrase"
@@ -199,7 +189,7 @@
           @keydown.enter.prevent="maybeSubmitOnEnter"
         />
         <p class="mt-1 text-xs text-muted-foreground">
-          确认后会在当前弹窗中显示执行状态，完成前不能关闭。
+          {{ t('ui.progressWillAppearInThisDialogAfterConfirmationKeepIt') }}
         </p>
       </div>
     </div>
@@ -211,20 +201,33 @@
         :disabled="!canSubmit"
         @click="handleConfirm"
       >
-        {{ isLocked ? '清理中…' : '确认清理' }}
+        {{ isLocked ? t('ui.cleaning') : t('ui.confirmCleanup') }}
       </Button>
       <Button
         variant="outline"
         :disabled="isLocked"
         @click="handleCancel"
       >
-        {{ isFinished ? '关闭' : '取消' }}
+        {{ isFinished ? t('ui.close') : t('common.cancel') }}
       </Button>
     </template>
   </Dialog>
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+const props = defineProps<{
+  open: boolean
+}>()
+
+const emit = defineEmits<{
+  'update:open': [value: boolean]
+  'running-change': [value: boolean]
+  completed: [task: CleanupRunRecord]
+}>()
+
+const { t } = useI18n()
+
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { Dialog } from '@/components/ui'
 import Button from '@/components/ui/button.vue'
@@ -249,16 +252,6 @@ import {
   type ManualCleanupTarget,
 } from './manualCleanupForm'
 
-const props = defineProps<{
-  open: boolean
-}>()
-
-const emit = defineEmits<{
-  'update:open': [value: boolean]
-  'running-change': [value: boolean]
-  completed: [task: CleanupRunRecord]
-}>()
-
 const confirmPhrase = MANUAL_USAGE_CLEANUP_CONFIRM_PHRASE
 
 const mode = ref<ManualCleanupMode>('policy')
@@ -278,16 +271,16 @@ let previewSeq = 0
 let taskPollTimer: number | null = null
 
 const modeOptions: Array<{ value: ManualCleanupMode; label: string; description: string }> = [
-  { value: 'policy', label: '按当前策略', description: '沿用页面上配置的保留天数' },
-  { value: 'older_than_days', label: '指定天数前', description: '在策略内取更保守时间点' },
-  { value: 'before_now', label: '当前时刻之前', description: '只清已选请求体内容' },
+  { value: 'policy', get label() { return t('ui.useCurrentPolicy') }, get description() { return t('ui.useTheConfiguredRetentionPeriods') } },
+  { value: 'older_than_days', get label() { return t('ui.olderThanASpecifiedNumberOfDays') }, get description() { return t('ui.useTheOlderCutoffAllowedByThePolicy') } },
+  { value: 'before_now', get label() { return t('ui.beforeNow') }, get description() { return t('ui.clearOnlyTheSelectedBodyContent') } },
 ]
 
 const targetLabels: Record<ManualCleanupTarget, { label: string; description: string }> = {
-  detail_body: { label: '详细请求体', description: '把详细 body 移入压缩/外置存储' },
-  compressed_body: { label: '压缩请求体', description: '删除已压缩或外置的 body 内容' },
-  headers: { label: '请求头', description: '清空请求/响应 headers 字段' },
-  records: { label: '整条记录', description: '删除超过记录保留期的 usage 行' },
+  detail_body: { get label() { return t('ui.detailedRequestBodies') }, get description() { return t('ui.moveDetailedBodiesToCompressedOrExternalStorage') } },
+  compressed_body: { get label() { return t('ui.compressedRequestBodies') }, get description() { return t('ui.deleteCompressedOrExternallyStoredBodies') } },
+  headers: { get label() { return t('ui.requestHeaders') }, get description() { return t('ui.clearRequestAndResponseHeaders') } },
+  records: { get label() { return t('ui.completeRecords') }, get description() { return t('ui.deleteUsageRowsPastTheirRetentionPeriod') } },
 }
 
 const targetOptions = computed(() =>
@@ -302,7 +295,7 @@ const normalizedTargets = computed(() =>
 )
 
 const targetError = computed(() => {
-  if (normalizedTargets.value.length === 0) return '至少选择一个清理范围'
+  if (normalizedTargets.value.length === 0) return t('ui.selectAtLeastOneCleanupScope')
   return null
 })
 
@@ -519,9 +512,9 @@ async function pollTask(taskId: string) {
 }
 
 function cleanupStatusLabel(status: string): string {
-  if (status === 'processing') return '执行中'
-  if (status === 'failed') return '失败'
-  return '完成'
+  if (status === 'processing') return t('ui.running5026a63')
+  if (status === 'failed') return t('ui.failed28384d7')
+  return t('ui.completed')
 }
 
 function cleanupStatusClass(status: string): string {
@@ -532,21 +525,21 @@ function cleanupStatusClass(status: string): string {
 
 function cleanupSummaryText(summary: Record<string, unknown>): string {
   const total = typeof summary.total === 'number' ? summary.total : null
-  if (total !== null && total > 0) return `影响 ${total} 项`
+  if (total !== null && total > 0) return t('settings.cleanup.affectedItems', { count: total })
   const entries = Object.entries(summary)
     .filter(([key, value]) => key !== 'progress_percent' && typeof value === 'number' && value > 0)
     .map(([key, value]) => `${summaryLabel(key)} ${value}`)
-  return entries.length > 0 ? entries.join(' / ') : '等待后台返回结果'
+  return entries.length > 0 ? entries.join(' / ') : t('settings.cleanup.awaitingResult')
 }
 
 function summaryLabel(key: string): string {
   const labels: Record<string, string> = {
-    body_externalized: '详细体',
-    legacy_body_refs_migrated: '迁移',
-    body_cleaned: '清体',
-    header_cleaned: '清头',
+    get body_externalized() { return t('ui.detailedBody') },
+    get legacy_body_refs_migrated() { return t('ui.migration') },
+    get body_cleaned() { return t('ui.bodyCleanup') },
+    get header_cleaned() { return t('ui.headerCleanup') },
     keys_cleaned: 'Key',
-    records_deleted: '删记录',
+    get records_deleted() { return t('ui.deleteRecords') },
   }
   return labels[key] || key
 }
@@ -559,4 +552,5 @@ onBeforeUnmount(() => {
   clearPreviewTimer()
   stopTaskPolling()
 })
+
 </script>

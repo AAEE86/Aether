@@ -16,7 +16,7 @@
             : 'border-border text-muted-foreground hover:text-foreground hover:border-foreground/20'"
           @click="$emit('selectWindsurfLoginOption', opt.key)"
         >
-          {{ legacyT(opt.label) }}
+          {{ opt.label }}
         </button>
       </div>
 
@@ -30,10 +30,10 @@
           </div>
           <div class="space-y-1">
             <p class="text-sm font-medium text-destructive">
-              {{ legacyT(device.status === 'expired' ? '授权已过期' : '授权失败') }}
+              {{ device.status === 'expired' ? t('ui.authorizationExpired') : t('ui.authorizationFailed') }}
             </p>
             <p class="text-xs text-muted-foreground">
-              {{ legacyT(device.error || '请重试') }}
+              {{ (device.error || t('ui.pleaseTryAgain')) }}
             </p>
           </div>
           <Button
@@ -41,7 +41,7 @@
             variant="outline"
             @click="$emit('reset')"
           >
-            {{ legacyT('重新开始') }}
+            {{ t('ui.startOver') }}
           </Button>
         </div>
       </div>
@@ -53,7 +53,7 @@
         <div class="text-center">
           <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-primary mx-auto mb-3" />
           <p class="text-xs text-muted-foreground">
-            {{ legacyT('正在准备登录...') }}
+            {{ t('ui.preparingSignIn') }}
           </p>
         </div>
       </div>
@@ -65,7 +65,7 @@
         <div class="space-y-2">
           <div class="flex items-center gap-2">
             <span class="flex items-center justify-center w-4 h-4 rounded-full bg-primary/10 text-primary text-[10px] font-semibold shrink-0">1</span>
-            <span class="text-xs font-medium">{{ legacyT('前往登录') }}</span>
+            <span class="text-xs font-medium">{{ t('ui.goToSignIn') }}</span>
           </div>
           <div class="flex gap-2 pl-6">
             <Button
@@ -74,7 +74,7 @@
               @click="$emit('openVerificationUrl')"
             >
               <ExternalLink class="w-3 h-3 mr-1" />
-              {{ legacyT('打开') }}
+              {{ t('ui.openc771248') }}
             </Button>
             <Button
               size="sm"
@@ -83,7 +83,7 @@
               @click="copyToClipboard(device.verification_uri_complete)"
             >
               <Copy class="w-3 h-3 mr-1" />
-              {{ legacyT('复制') }}
+              {{ t('common.copy') }}
             </Button>
             <Button
               v-if="!device.session_id"
@@ -92,7 +92,7 @@
               :disabled="device.starting"
               @click="$emit('start')"
             >
-              {{ legacyT('开始') }}
+              {{ t('ui.start') }}
             </Button>
           </div>
         </div>
@@ -100,7 +100,7 @@
         <div class="space-y-2">
           <div class="flex items-center gap-2">
             <span class="flex items-center justify-center w-4 h-4 rounded-full bg-primary/10 text-primary text-[10px] font-semibold shrink-0">2</span>
-            <span class="text-xs font-medium">{{ legacyT('粘贴回调 URL 或 token') }}</span>
+            <span class="text-xs font-medium">{{ t('ui.pasteCallbackUrlOrToken') }}</span>
           </div>
           <div class="pl-6">
             <Textarea
@@ -138,10 +138,10 @@
             </div>
             <div class="space-y-1">
               <p class="text-sm font-medium text-destructive">
-                {{ legacyT(device.status === 'expired' ? '授权已过期' : '授权失败') }}
+                {{ device.status === 'expired' ? t('ui.authorizationExpired') : t('ui.authorizationFailed') }}
               </p>
               <p class="text-xs text-muted-foreground">
-                {{ legacyT(device.error || '请重试') }}
+                {{ (device.error || t('ui.pleaseTryAgain')) }}
               </p>
             </div>
             <Button
@@ -149,7 +149,7 @@
               variant="outline"
               @click="$emit('reset')"
             >
-              {{ legacyT('重新开始') }}
+              {{ t('ui.startOver') }}
             </Button>
           </div>
         </div>
@@ -161,7 +161,7 @@
           <div class="text-center">
             <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-primary mx-auto mb-3" />
             <p class="text-xs text-muted-foreground">
-              {{ legacyT('正在准备设备授权...') }}
+              {{ t('ui.preparingDeviceAuthorization') }}
             </p>
           </div>
         </div>
@@ -180,10 +180,10 @@
 
             <div class="space-y-1">
               <p class="text-sm font-medium">
-                {{ legacyT('在浏览器中输入设备码完成授权') }}
+                {{ t('ui.enterTheDeviceCodeInYourBrowserToCompleteAuthorization') }}
               </p>
               <p class="text-xs text-muted-foreground">
-                {{ legacyT('授权完成后此页面将自动更新') }}
+                {{ t('ui.thisPageUpdatesAutomaticallyAfterAuthorizationIsComplete') }}
               </p>
             </div>
 
@@ -194,7 +194,7 @@
               <span class="text-lg font-mono font-bold tracking-[0.2em]">{{ device.user_code }}</span>
               <button
                 class="p-1 rounded hover:bg-muted transition-colors"
-                :title="legacyT('复制设备码')"
+                :title="t('ui.copyDeviceCode')"
                 @click="copyToClipboard(device.user_code)"
               >
                 <Copy class="w-3.5 h-3.5 text-muted-foreground" />
@@ -214,7 +214,7 @@
                 @click="$emit('openVerificationUrl')"
               >
                 <ExternalLink class="w-3.5 h-3.5 mr-1.5" />
-                {{ legacyT('打开授权页面') }}
+                {{ t('ui.openAuthorizationPage') }}
               </Button>
               <Button
                 size="sm"
@@ -233,14 +233,14 @@
           class="flex h-full flex-col items-center justify-center gap-3"
         >
           <p class="text-xs text-muted-foreground text-center">
-            {{ legacyT('使用 xAI 设备授权登录 Grok CLI，或改为导入 API Key / Refresh Token。') }}
+            {{ t('ui.signInToGrokCliWithXaiDeviceAuthorizationOr') }}
           </p>
           <Button
             class="w-full"
             :disabled="device.starting"
             @click="$emit('start')"
           >
-            {{ device.starting ? legacyT('正在准备授权...') : legacyT('开始授权') }}
+            {{ device.starting ? t('ui.preparingAuthorization') : t('ui.authorize') }}
           </Button>
         </div>
       </div>
@@ -283,10 +283,10 @@
             </div>
             <div class="space-y-1">
               <p class="text-sm font-medium text-destructive">
-                {{ legacyT(device.status === 'expired' ? '授权已过期' : '授权失败') }}
+                {{ device.status === 'expired' ? t('ui.authorizationExpired') : t('ui.authorizationFailed') }}
               </p>
               <p class="text-xs text-muted-foreground">
-                {{ legacyT(device.error || '请重试') }}
+                {{ (device.error || t('ui.pleaseTryAgain')) }}
               </p>
             </div>
             <Button
@@ -294,7 +294,7 @@
               variant="outline"
               @click="$emit('reset')"
             >
-              {{ legacyT('重新开始') }}
+              {{ t('ui.startOver') }}
             </Button>
           </div>
         </div>
@@ -307,7 +307,7 @@
           <div class="text-center">
             <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-primary mx-auto mb-3" />
             <p class="text-xs text-muted-foreground">
-              {{ legacyT('正在注册设备...') }}
+              {{ t('ui.registeringDevice') }}
             </p>
           </div>
         </div>
@@ -320,7 +320,7 @@
           <div class="space-y-2 shrink-0">
             <div class="flex items-center gap-2">
               <span class="flex items-center justify-center w-4 h-4 rounded-full bg-primary/10 text-primary text-[10px] font-semibold shrink-0">1</span>
-              <span class="text-xs font-medium">{{ legacyT('前往授权') }}</span>
+              <span class="text-xs font-medium">{{ t('ui.goToAuthorization') }}</span>
             </div>
             <div class="flex gap-2 pl-6">
               <Button
@@ -329,7 +329,7 @@
                 @click="$emit('openVerificationUrl')"
               >
                 <ExternalLink class="w-3 h-3 mr-1" />
-                {{ legacyT('打开') }}
+                {{ t('ui.openc771248') }}
               </Button>
               <Button
                 size="sm"
@@ -338,7 +338,7 @@
                 @click="copyToClipboard(device.verification_uri_complete)"
               >
                 <Copy class="w-3 h-3 mr-1" />
-                {{ legacyT('复制') }}
+                {{ t('common.copy') }}
               </Button>
             </div>
           </div>
@@ -346,7 +346,7 @@
           <div class="flex min-h-0 flex-1 flex-col gap-2">
             <div class="flex items-center gap-2">
               <span class="flex items-center justify-center w-4 h-4 rounded-full bg-primary/10 text-primary text-[10px] font-semibold shrink-0">2</span>
-              <span class="text-xs font-medium">{{ legacyT('粘贴回调 URL') }}</span>
+              <span class="text-xs font-medium">{{ t('ui.pasteCallbackUrl') }}</span>
             </div>
             <div class="min-h-0 flex-1 pl-6">
               <Textarea
@@ -376,10 +376,10 @@
 
             <div class="space-y-1">
               <p class="text-sm font-medium">
-                {{ legacyT('在浏览器中完成授权') }}
+                {{ t('ui.completeAuthorizationInTheBrowser') }}
               </p>
               <p class="text-xs text-muted-foreground">
-                {{ legacyT('授权完成后此页面将自动更新') }}
+                {{ t('ui.thisPageUpdatesAutomaticallyAfterAuthorizationIsComplete') }}
               </p>
             </div>
 
@@ -395,7 +395,7 @@
               <div class="flex items-center justify-between">
                 <div class="flex items-center gap-2">
                   <ShieldCheck class="w-3.5 h-3.5 text-primary" />
-                  <span class="text-[10px] text-muted-foreground">{{ legacyT('MFA 验证码') }}</span>
+                  <span class="text-[10px] text-muted-foreground">{{ t('ui.mfaCode') }}</span>
                 </div>
                 <div class="flex items-center gap-1.5">
                   <span
@@ -403,7 +403,7 @@
                   >{{ totpCode }}</span>
                   <button
                     class="p-1 rounded hover:bg-muted transition-colors"
-                    :title="legacyT('复制验证码')"
+                    :title="t('ui.copyVerificationCode')"
                     @click="copyToClipboard(totpCode)"
                   >
                     <Copy class="w-3 h-3 text-muted-foreground" />
@@ -432,7 +432,7 @@
                 @click="$emit('openVerificationUrl')"
               >
                 <ExternalLink class="w-3.5 h-3.5 mr-1.5" />
-                {{ legacyT('打开授权页面') }}
+                {{ t('ui.openAuthorizationPage') }}
               </Button>
               <Button
                 size="sm"
@@ -454,14 +454,14 @@
             v-if="isSocialDeviceAuth"
             class="text-xs text-muted-foreground text-center"
           >
-            {{ legacyT('授权后复制浏览器地址栏的 localhost 回调 URL。') }}
+            {{ t('ui.afterAuthorizationCopyTheLocalhostCallbackUrlFromTheBrowser') }}
           </p>
 
           <p
             v-else-if="device.auth_type === 'builder_id'"
             class="text-xs text-muted-foreground text-center"
           >
-            {{ legacyT('使用个人 AWS Builder ID 进行设备授权，无需额外配置。') }}
+            {{ t('ui.useAPersonalAwsBuilderIdForDeviceAuthorizationNo') }}
           </p>
 
           <div
@@ -490,7 +490,7 @@
                 <ComboboxAnchor class="relative w-full">
                   <ComboboxInput
                     :display-value="() => device.region"
-                    :placeholder="legacyT('输入或选择 Region')"
+                    :placeholder="t('ui.enterOrSelectRegion')"
                     class="w-full h-8 px-2 pr-7 text-xs rounded-md border border-border bg-background font-mono focus:outline-none focus:ring-1 focus:ring-ring focus:relative focus:z-10"
                     spellcheck="false"
                     @input="(e: Event) => regionSearch = (e.target as HTMLInputElement).value"
@@ -506,7 +506,7 @@
                 >
                   <ComboboxViewport>
                     <ComboboxEmpty class="px-2 py-1.5 text-xs text-muted-foreground">
-                      {{ awsRegionsLoaded ? legacyT('无匹配结果，回车使用自定义值') : legacyT('加载中...') }}
+                      {{ awsRegionsLoaded ? t('ui.noMatchesPressEnterToUseACustomValue') : t('common.loading') }}
                     </ComboboxEmpty>
                     <ComboboxItem
                       v-for="r in filteredRegions"
@@ -525,11 +525,11 @@
               </ComboboxRoot>
             </div>
             <div class="space-y-1.5">
-              <label class="text-xs font-medium text-muted-foreground">{{ legacyT('TOTP Secret (可选, 2FA认证)') }}</label>
+              <label class="text-xs font-medium text-muted-foreground">{{ t('ui.totpSecretOptional2fa') }}</label>
               <input
                 :value="device.totp_secret"
                 type="text"
-                placeholder="Base32 secret, 如 JBSWY3DPEHPK3PXP"
+                :placeholder="t('ui.base32SecretEGJbswy3dpehpk3pxp')"
                 class="w-full h-8 px-2 text-xs rounded-md border border-border bg-background font-mono focus:outline-none focus:ring-1 focus:ring-ring focus:relative focus:z-10"
                 spellcheck="false"
                 @input="(e: Event) => $emit('update:field', 'totp_secret', (e.target as HTMLInputElement).value)"
@@ -542,7 +542,7 @@
             :disabled="device.starting || (device.auth_type === 'identity_center' && !device.start_url.trim())"
             @click="$emit('start')"
           >
-            {{ device.starting ? legacyT('正在准备授权...') : legacyT('开始授权') }}
+            {{ device.starting ? t('ui.preparingAuthorization') : t('ui.authorize') }}
           </Button>
         </div>
       </div>
@@ -602,10 +602,9 @@ const emit = defineEmits<{
   openVerificationUrl: []
 }>()
 
-const { copyToClipboard } = useClipboard()
-const { legacyT, locale } = useI18n()
+const { t } = useI18n()
 
-const isEnglishLocale = computed(() => locale.value === 'en-US')
+const { copyToClipboard } = useClipboard()
 
 const isSocialDeviceAuth = computed(() =>
   props.device.auth_type === 'google' || props.device.auth_type === 'github'
@@ -613,7 +612,7 @@ const isSocialDeviceAuth = computed(() =>
 
 const callbackPlaceholder = computed(() =>
   props.variant === 'windsurf'
-    ? legacyT('粘贴包含 token=...&state=... 的回调 URL；session token/apiKey 也可直接粘贴，普通 token 请用导入授权')
+    ? t('ui.pasteACallbackUrlContainingTokenStateSessionTokenApikey')
     : `http://localhost:49153/oauth/callback?login_option=${props.device.auth_type}&code=...&state=...`
 )
 
@@ -625,15 +624,11 @@ const countdownFormatted = computed(() => {
 })
 
 const sessionRemainingText = computed(() => (
-  isEnglishLocale.value
-    ? `Session remaining ${countdownFormatted.value}`
-    : `会话剩余 ${countdownFormatted.value}`
+  t('providers.migration.sessionExpiresIn5fcc5f', { value: String(countdownFormatted.value) })
 ))
 
 const remainingText = computed(() => (
-  isEnglishLocale.value
-    ? `${countdownFormatted.value} remaining`
-    : `剩余 ${countdownFormatted.value}`
+  t('providers.migration.remaining43f955', { value: String(countdownFormatted.value) })
 ))
 
 // AWS Regions (动态获取 + 进程内缓存)

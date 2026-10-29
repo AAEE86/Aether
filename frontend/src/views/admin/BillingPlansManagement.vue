@@ -1,16 +1,15 @@
 <template>
   <PageContainer padding="lg">
     <PageHeader
-      title="套餐管理"
-      description="配置额度、流量限制、会员权益和组合套餐"
+      :title="t('nav.billingManagement')"
+      :description="t('ui.configureCreditUsageLimitsMembershipBenefitsAndBundledPlans')"
     >
       <template #actions>
         <Button
           size="sm"
           @click="openCreateDialog"
         >
-          <Plus class="mr-2 h-4 w-4" />
-          新建套餐
+          <Plus class="mr-2 h-4 w-4" /> {{ t('ui.createPlan') }}
         </Button>
       </template>
     </PageHeader>
@@ -20,21 +19,21 @@
         v-if="loading"
         class="py-16"
       >
-        <LoadingState message="正在加载套餐..." />
+        <LoadingState :message="t('ui.loadingPlans')" />
       </div>
 
       <CardSection
         v-else
-        title="套餐列表"
-        description="启用后的套餐会出现在用户套餐中心"
+        :title="t('ui.plans')"
+        :description="t('ui.enabledPlansAppearInTheUserPlanCatalog')"
       >
         <div
           v-if="plans.length === 0"
           class="py-12"
         >
           <EmptyState
-            title="暂无套餐"
-            description="创建第一个套餐后，用户可以在套餐中心购买"
+            :title="t('ui.noPlans')"
+            :description="t('ui.createAPlanToMakeItAvailableForUsersTo')"
           />
         </div>
 
@@ -46,25 +45,25 @@
             <TableHeader>
               <TableRow>
                 <TableHead class="w-[24%]">
-                  套餐
+                  {{ t('ui.plan') }}
                 </TableHead>
                 <TableHead class="w-[10%] whitespace-nowrap">
-                  价格
+                  {{ t('ui.price') }}
                 </TableHead>
                 <TableHead class="w-[18%] whitespace-nowrap">
-                  权益有效期
+                  {{ t('ui.benefitValidity') }}
                 </TableHead>
                 <TableHead class="w-[20%]">
-                  权益
+                  {{ t('ui.benefits') }}
                 </TableHead>
                 <TableHead class="w-[6%] whitespace-nowrap text-center">
-                  排序
+                  {{ t('common.sort') }}
                 </TableHead>
                 <TableHead class="w-[7%] whitespace-nowrap text-center">
-                  状态
+                  {{ t('ui.status6320b4a') }}
                 </TableHead>
                 <TableHead class="w-[15%] whitespace-nowrap text-right">
-                  操作
+                  {{ t('ui.actionsed31fbb') }}
                 </TableHead>
               </TableRow>
             </TableHeader>
@@ -118,7 +117,7 @@
                       class="h-1.5 w-1.5 rounded-full"
                       :class="plan.enabled ? 'bg-emerald-500' : 'bg-muted-foreground/40'"
                     />
-                    {{ plan.enabled ? '已启用' : '已停用' }}
+                    {{ plan.enabled ? t('ui.enableddfb8022') : t('ui.disableda8c3698') }}
                   </span>
                 </TableCell>
                 <TableCell class="whitespace-nowrap text-right">
@@ -129,7 +128,7 @@
                       :disabled="deletingPlanId === plan.id"
                       @click="togglePlanStatus(plan)"
                     >
-                      {{ plan.enabled ? '停用' : '启用' }}
+                      {{ plan.enabled ? t('ui.disable4e6fd0e') : t('ui.enablef4f0ead') }}
                     </Button>
                     <Button
                       variant="ghost"
@@ -137,7 +136,7 @@
                       :disabled="deletingPlanId === plan.id"
                       @click="openEditDialog(plan)"
                     >
-                      编辑
+                      {{ t('ui.edit0518365') }}
                     </Button>
                     <DropdownMenu>
                       <DropdownMenuTrigger as-child>
@@ -157,7 +156,7 @@
                           @select="deletePlan(plan)"
                         >
                           <Trash2 class="mr-2 h-4 w-4" />
-                          {{ deletingPlanId === plan.id ? '删除中...' : '删除套餐' }}
+                          {{ deletingPlanId === plan.id ? t('ui.deleting') : t('ui.deletePlan') }}
                         </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
@@ -212,7 +211,7 @@ import BillingPlanFormDialog from '@/features/billing/components/BillingPlanForm
 import { formatUsagePolicyBadge, resolvePlanModeFromEntitlements } from '@/features/billing/utils/billingPlanForm'
 
 const { success, error: showError } = useToast()
-const { legacyT } = useI18n()
+const { t } = useI18n()
 
 const loading = ref(true)
 const deletingPlanId = ref<string | null>(null)
@@ -237,7 +236,7 @@ async function loadPlans() {
     )
   } catch (err) {
     log.error('加载套餐失败:', err)
-    showError(parseApiError(err, '加载套餐失败'))
+    showError(parseApiError(err, t('ui.failedToLoadPlans')))
   }
 }
 
@@ -247,7 +246,7 @@ async function loadUserGroups() {
     userGroups.value = response.items
   } catch (err) {
     log.error('加载用户分组失败:', err)
-    showError(parseApiError(err, '加载用户分组失败'))
+    showError(parseApiError(err, t('ui.failedToLoadUserGroups')))
   }
 }
 
@@ -264,7 +263,7 @@ function openEditDialog(plan: BillingPlan) {
 async function togglePlanStatus(plan: BillingPlan) {
   try {
     await adminBillingPlansApi.setStatus(plan.id, !plan.enabled)
-    success(plan.enabled ? '套餐已停用' : '套餐已启用')
+    success(plan.enabled ? t('ui.planDisabled') : t('ui.planEnabled'))
     await loadPlans()
   } catch (err) {
     log.error('更新套餐状态失败:', err)
@@ -275,14 +274,14 @@ async function togglePlanStatus(plan: BillingPlan) {
 async function deletePlan(plan: BillingPlan) {
   if (deletingPlanId.value) return
   const confirmed = window.confirm(
-    legacyT(`确定删除套餐「${plan.title}」吗？\n\n已有订单或权益的套餐不能删除，请改为停用。删除后无法恢复。`)
+    t('ui.deletePlanValuePlansWithExistingOrdersOrEntitlementsCannot', { value: plan.title })
   )
   if (!confirmed) return
 
   deletingPlanId.value = plan.id
   try {
     await adminBillingPlansApi.delete(plan.id)
-    success('套餐已删除')
+    success(t('ui.planDeleted'))
     await loadPlans()
   } catch (err) {
     log.error('删除套餐失败:', err)
@@ -301,7 +300,7 @@ function formatPlanPeriod(plan: BillingPlan): string {
 }
 
 function planPurchaseLimitHint(plan: BillingPlan): string {
-  if (plan.purchase_limit_scope === 'unlimited') return '不限购'
+  if (plan.purchase_limit_scope === 'unlimited') return t('ui.noPurchaseLimit')
   if (plan.purchase_limit_scope === 'lifetime') {
     return `每人最多购买 ${plan.max_active_per_user} 次`
   }
@@ -309,15 +308,15 @@ function planPurchaseLimitHint(plan: BillingPlan): string {
 }
 
 function planDurationHint(plan: BillingPlan): string {
-  if (plan.purchase_limit_scope === 'unlimited') return '不限制重复购买'
-  if (plan.purchase_limit_scope === 'lifetime') return '不按周期重置购买次数'
+  if (plan.purchase_limit_scope === 'unlimited') return t('ui.noRepeatPurchaseLimit')
+  if (plan.purchase_limit_scope === 'lifetime') return t('ui.purchaseCountsDoNotResetPeriodically')
   const mode = resolvePlanModeFromEntitlements(plan.entitlements)
-  if (mode === 'wallet') return '旧余额套餐，建议停用'
-  if (mode === 'daily') return '每日额度周期'
-  if (mode === 'membership') return '会员权限周期'
-  if (mode === 'usage') return '使用限制周期'
-  if (mode === 'mixed') return '组合权益周期'
-  return '未配置权益'
+  if (mode === 'wallet') return t('ui.legacyWalletCreditPlanDisablingIsRecommended')
+  if (mode === 'daily') return t('ui.dailyCreditPeriod')
+  if (mode === 'membership') return t('ui.membershipPeriod')
+  if (mode === 'usage') return t('ui.usageLimitPeriod')
+  if (mode === 'mixed') return t('ui.bundledBenefitPeriod')
+  return t('ui.noBenefitsConfigured')
 }
 
 function groupName(groupId: string): string {
@@ -339,7 +338,7 @@ function entitlementBadges(plan: BillingPlan): string[] {
     if (entitlement.type === 'usage_policy') {
       return formatUsagePolicyBadge(entitlement)
     }
-    return '未知权益'
+    return t('ui.unknownBenefit')
   })
 }
 

@@ -5,7 +5,7 @@
     class="mt-2 p-2 bg-muted/30 rounded-md"
   >
     <ProviderQuotaSectionHeader
-      :title="legacyT('账号配额')"
+      :title="t('ui.accountQuota')"
       :loading="refreshing"
       :updated-text="getCodexQuotaDisplay(key)?.updated_at ? formatUpdatedAt(getCodexQuotaDisplay(key)?.updated_at || 0) : null"
     />
@@ -17,7 +17,7 @@
       <!-- 主限额 -->
       <ProviderQuotaProgressRow
         v-if="getCodexQuotaDisplay(key)?.primary_used_percent !== undefined"
-        :label="legacyT(getCodexPrimaryQuotaLabel(key))"
+        :label="getCodexPrimaryQuotaLabel(key)"
         :used-percent="getCodexQuotaDisplay(key)?.primary_used_percent || 0"
         :remaining-percent="toCodexRemainingPercent(getCodexQuotaDisplay(key)?.primary_used_percent)"
         :meter-class="getQuotaRemainingClass(getCodexQuotaDisplay(key)?.primary_used_percent || 0)"
@@ -40,7 +40,7 @@
       <!-- 5H限额（仅 Team/Plus/Enterprise 显示） -->
       <ProviderQuotaProgressRow
         v-if="isCodexTeamPlan(key) && getCodexQuotaDisplay(key)?.secondary_used_percent !== undefined"
-        :label="legacyT('5H限额')"
+        :label="t('ui.5hLimit')"
         :used-percent="getCodexQuotaDisplay(key)?.secondary_used_percent || 0"
         :remaining-percent="toCodexRemainingPercent(getCodexQuotaDisplay(key)?.secondary_used_percent)"
         :meter-class="getQuotaRemainingClass(getCodexQuotaDisplay(key)?.secondary_used_percent || 0)"
@@ -72,7 +72,7 @@
       <div class="grid gap-3 grid-cols-2">
         <ProviderQuotaProgressRow
           v-if="getCodexQuotaDisplay(key)?.spark_secondary_used_percent !== undefined"
-          :label="legacyT('Spark 周')"
+          :label="t('ui.sparkWeeklyd2a6127')"
           :used-percent="getCodexQuotaDisplay(key)?.spark_secondary_used_percent || 0"
           :remaining-percent="toCodexRemainingPercent(getCodexQuotaDisplay(key)?.spark_secondary_used_percent)"
           :meter-class="getQuotaRemainingClass(getCodexQuotaDisplay(key)?.spark_secondary_used_percent || 0)"
@@ -94,7 +94,7 @@
         />
         <ProviderQuotaProgressRow
           v-if="getCodexQuotaDisplay(key)?.spark_primary_used_percent !== undefined"
-          :label="legacyT('Spark 5H')"
+          label="Spark 5H"
           :used-percent="getCodexQuotaDisplay(key)?.spark_primary_used_percent || 0"
           :remaining-percent="toCodexRemainingPercent(getCodexQuotaDisplay(key)?.spark_primary_used_percent)"
           :meter-class="getQuotaRemainingClass(getCodexQuotaDisplay(key)?.spark_primary_used_percent || 0)"
@@ -129,19 +129,19 @@
           @click="$emit('consumeResetCredit')"
         >
           {{ consumingResetCredit
-            ? legacyT('重置中...')
-            : legacyT(hasPendingCodexResetCredit(key) ? '继续确认重置' : '点击以进行重置') }}
+            ? t('ui.resetting')
+            : hasPendingCodexResetCredit(key) ? t('ui.continueCheckingReset') : t('ui.clickToReset') }}
         </button>
         <span
           v-else
           class="font-medium"
         >
-          {{ legacyT('点击以进行重置') }}
+          {{ t('ui.clickToReset') }}
         </span>
         <span>{{ formatCodexResetCreditCount(key) }}</span>
         <template v-if="getVisibleCodexResetCreditItems(key).length > 0">
           <span aria-hidden="true">|</span>
-          <span>{{ legacyT('临近过期') }}</span>
+          <span>{{ t('ui.expiringSoon1b588db') }}</span>
           <template
             v-for="(item, itemIndex) in getVisibleCodexResetCreditItems(key)"
             :key="item.id || `${item.displayKey}-${item.expiresAt}`"
@@ -175,7 +175,7 @@
       <ShieldX class="w-4 h-4 shrink-0" />
       <div class="flex-1 min-w-0">
         <div class="text-[11px] font-medium">
-          {{ legacyT('账户访问被禁止') }}
+          {{ t('ui.accountAccessForbidden') }}
         </div>
         <div
           v-if="getAntigravityForbiddenReason(key)"
@@ -195,7 +195,7 @@
     <!-- 正常配额显示 -->
     <template v-else>
       <ProviderQuotaSectionHeader
-        :title="legacyT('模型配额')"
+        :title="t('ui.modelQuota')"
         :loading="refreshing"
         :updated-text="getAntigravityQuotaUpdatedAt(key) ? formatUpdatedAt(getAntigravityQuotaUpdatedAt(key) || 0) : null"
       />
@@ -218,10 +218,10 @@
                 class="text-[9px] text-muted-foreground/70"
               >
                 <template v-if="item.resetSeconds !== null && item.resetSeconds > 0">
-                  {{ formatResetTime(item.resetSeconds) }}{{ legacyT('后重置') }}
+                  {{ formatResetTime(item.resetSeconds) }}{{ t('ui.untilReset') }}
                 </template>
                 <template v-else-if="item.resetSeconds !== null && item.resetSeconds <= 0">
-                  {{ legacyT('已重置') }}
+                  {{ t('ui.resetd2cd2e2') }}
                 </template>
               </div>
             </div>
@@ -236,7 +236,7 @@
     class="mt-2 p-2 rounded-md bg-muted/30"
   >
     <ProviderQuotaSectionHeader
-      :title="legacyT('账号配额')"
+      :title="t('ui.accountQuota')"
       :loading="refreshing"
       :updated-text="getClaudeCodeQuotaUpdatedAt(key) ? formatUpdatedAt(getClaudeCodeQuotaUpdatedAt(key) || 0) : null"
     />
@@ -256,10 +256,10 @@
             class="text-[9px] text-muted-foreground/70 mt-0.5"
           >
             <template v-if="item.resetSeconds > 0">
-              {{ formatResetTime(item.resetSeconds) }}{{ legacyT('后重置') }}
+              {{ formatResetTime(item.resetSeconds) }}{{ t('ui.untilReset') }}
             </template>
             <template v-else>
-              {{ legacyT('已重置') }}
+              {{ t('ui.resetd2cd2e2') }}
             </template>
           </div>
         </template>
@@ -273,7 +273,7 @@
         <span>{{ formatCodexResetCreditCountLabel(getClaudeCodeResetCreditAvailableCount(key)) }}</span>
         <template v-if="getVisibleClaudeCodeResetCreditItems(key).length > 0">
           <span aria-hidden="true">|</span>
-          <span>{{ legacyT('临近过期') }}</span>
+          <span>{{ t('ui.expiringSoon1b588db') }}</span>
           <template
             v-for="(item, itemIndex) in getVisibleClaudeCodeResetCreditItems(key)"
             :key="`${item.displayKey}-${item.expiresAt}`"
@@ -299,7 +299,7 @@
     class="mt-2 p-2 rounded-md bg-muted/30"
   >
     <ProviderQuotaSectionHeader
-      :title="legacyT('模型配额')"
+      :title="t('ui.modelQuota')"
       :loading="refreshing"
       :updated-text="getGeminiCliQuotaUpdatedAt(key) ? formatUpdatedAt(getGeminiCliQuotaUpdatedAt(key) || 0) : null"
     />
@@ -329,10 +329,10 @@
             class="text-[9px] text-muted-foreground/70 mt-0.5"
           >
             <template v-if="item.resetSeconds > 0">
-              {{ formatResetTime(item.resetSeconds) }}{{ legacyT('后重置') }}
+              {{ formatResetTime(item.resetSeconds) }}{{ t('ui.untilReset') }}
             </template>
             <template v-else>
-              {{ legacyT('已重置') }}
+              {{ t('ui.resetd2cd2e2') }}
             </template>
           </div>
         </template>
@@ -353,7 +353,7 @@
       <ShieldX class="w-4 h-4 shrink-0" />
       <div class="flex-1 min-w-0">
         <div class="text-[11px] font-medium">
-          {{ legacyT('账户已封禁') }}
+          {{ t('ui.accountBannedb1ae4c0') }}
         </div>
         <div
           v-if="getKiroQuotaDisplay(key)?.ban_reason"
@@ -373,7 +373,7 @@
     <!-- 正常配额显示 -->
     <template v-else>
       <ProviderQuotaSectionHeader
-        :title="legacyT('账号配额')"
+        :title="t('ui.accountQuota')"
         :loading="refreshing"
         :updated-text="getKiroQuotaDisplay(key)?.updated_at ? formatUpdatedAt(getKiroQuotaDisplay(key)?.updated_at || 0) : null"
       />
@@ -381,7 +381,7 @@
       <div>
         <!-- 使用额度进度条 -->
         <ProviderQuotaProgressRow
-          :label="legacyT('使用额度')"
+          :label="t('ui.usageQuota')"
           :used-percent="getKiroQuotaDisplay(key)?.usage_percentage || 0"
           :meter-class="getQuotaRemainingClass(getKiroQuotaDisplay(key)?.usage_percentage || 0)"
           :bar-class="getQuotaRemainingBarColor(getKiroQuotaDisplay(key)?.usage_percentage || 0)"
@@ -393,7 +393,7 @@
                 {{ formatKiroUsage(getKiroQuotaDisplay(key)?.usage_limit) }}
               </span>
               <span v-if="getKiroQuotaDisplay(key)?.next_reset_at">
-                {{ formatKiroResetTime(getKiroQuotaDisplay(key)?.next_reset_at) }}{{ legacyT('重置') }}
+                {{ formatKiroResetTime(getKiroQuotaDisplay(key)?.next_reset_at) }}{{ t('ui.reset') }}
               </span>
             </div>
           </template>
@@ -407,20 +407,20 @@
     class="mt-2 p-2 rounded-md bg-muted/30"
   >
     <ProviderQuotaSectionHeader
-      :title="legacyT('账号配额')"
+      :title="t('ui.accountQuota')"
       :loading="refreshing"
       :updated-text="getXaiQuotaDisplay(key)?.updated_at ? formatUpdatedAt(getXaiQuotaDisplay(key)?.updated_at || 0) : null"
     />
     <div class="space-y-2">
       <ProviderQuotaProgressRow
         v-if="getXaiQuotaDisplay(key)?.usage_percentage !== undefined || getXaiQuotaDisplay(key)?.remaining_percentage !== undefined"
-        :label="legacyT(getXaiUsageLabel(key))"
+        :label="getXaiUsageLabel(key)"
         :used-percent="getXaiUsedPercent(key)"
         :remaining-percent="getXaiRemainingPercent(key)"
         :meter-class="getQuotaRemainingClass(getXaiUsedPercent(key))"
         :bar-class="getQuotaRemainingBarColor(getXaiUsedPercent(key))"
         :reset-text="getXaiQuotaDisplay(key)?.next_reset_at
-          ? `${formatKiroResetTime(getXaiQuotaDisplay(key)?.next_reset_at)}${legacyT('重置')}`
+          ? `${formatKiroResetTime(getXaiQuotaDisplay(key)?.next_reset_at)}${t('ui.reset')}`
           : null"
       >
         <template
@@ -433,7 +433,7 @@
               {{ formatKiroUsage(getXaiQuotaDisplay(key)?.usage_limit) }}
             </span>
             <span v-if="getXaiQuotaDisplay(key)?.next_reset_at">
-              {{ formatKiroResetTime(getXaiQuotaDisplay(key)?.next_reset_at) }}{{ legacyT('重置') }}
+              {{ formatKiroResetTime(getXaiQuotaDisplay(key)?.next_reset_at) }}{{ t('ui.reset') }}
             </span>
           </div>
         </template>
@@ -442,11 +442,11 @@
         v-if="getXaiQuotaDisplay(key)?.prepaid_balance != null"
         class="text-[10px] text-muted-foreground"
       >
-        {{ legacyT('预付额度') }}: {{ formatKiroUsage(getXaiQuotaDisplay(key)?.prepaid_balance) }}
+        {{ t('ui.prepaidCredits') }}: {{ formatKiroUsage(getXaiQuotaDisplay(key)?.prepaid_balance) }}
       </div>
       <ProviderQuotaProgressRow
         v-if="getXaiQuotaDisplay(key)?.on_demand_cap"
-        :label="legacyT('按需额度')"
+        :label="t('ui.onDemandCredits')"
         :used-percent="getXaiOnDemandUsedPercent(key)"
         :meter-class="getQuotaRemainingClass(getXaiOnDemandUsedPercent(key))"
         :bar-class="getQuotaRemainingBarColor(getXaiOnDemandUsedPercent(key))"
@@ -473,7 +473,7 @@
       <ShieldX class="w-4 h-4 shrink-0" />
       <div class="flex-1 min-w-0">
         <div class="text-[11px] font-medium">
-          {{ legacyT('账号不可用') }}
+          {{ t('ui.accountUnavailable') }}
         </div>
         <div
           v-if="getWindsurfQuotaDisplay(key)?.last_error"
@@ -504,31 +504,31 @@
         </div>
       </div>
       <ProviderQuotaSectionHeader
-        :title="legacyT('账号配额')"
+        :title="t('ui.accountQuota')"
         :loading="refreshing"
         :updated-text="getWindsurfQuotaDisplay(key)?.updated_at ? formatUpdatedAt(getWindsurfQuotaDisplay(key)?.updated_at || 0) : null"
       />
       <div class="grid grid-cols-2 gap-3">
         <ProviderQuotaProgressRow
           v-if="getWindsurfQuotaDisplay(key)?.daily_remaining_percent !== undefined"
-          :label="legacyT('日额度')"
+          :label="t('ui.dailyQuotaa644d7c')"
           :used-percent="getWindsurfQuotaDisplay(key)?.daily_used_percent || 0"
           :remaining-percent="getWindsurfQuotaDisplay(key)?.daily_remaining_percent || 0"
           :meter-class="getQuotaRemainingClass(getWindsurfQuotaDisplay(key)?.daily_used_percent || 0)"
           :bar-class="getQuotaRemainingBarColor(getWindsurfQuotaDisplay(key)?.daily_used_percent || 0)"
           :reset-text="getWindsurfQuotaDisplay(key)?.daily_reset_at
-            ? `${formatKiroResetTime(getWindsurfQuotaDisplay(key)?.daily_reset_at || 0)}${legacyT('重置')}`
+            ? `${formatKiroResetTime(getWindsurfQuotaDisplay(key)?.daily_reset_at || 0)}${t('ui.reset')}`
             : null"
         />
         <ProviderQuotaProgressRow
           v-if="getWindsurfQuotaDisplay(key)?.weekly_remaining_percent !== undefined"
-          :label="legacyT('周额度')"
+          :label="t('ui.weeklyQuota')"
           :used-percent="getWindsurfQuotaDisplay(key)?.weekly_used_percent || 0"
           :remaining-percent="getWindsurfQuotaDisplay(key)?.weekly_remaining_percent || 0"
           :meter-class="getQuotaRemainingClass(getWindsurfQuotaDisplay(key)?.weekly_used_percent || 0)"
           :bar-class="getQuotaRemainingBarColor(getWindsurfQuotaDisplay(key)?.weekly_used_percent || 0)"
           :reset-text="getWindsurfQuotaDisplay(key)?.weekly_reset_at
-            ? `${formatKiroResetTime(getWindsurfQuotaDisplay(key)?.weekly_reset_at || 0)}${legacyT('重置')}`
+            ? `${formatKiroResetTime(getWindsurfQuotaDisplay(key)?.weekly_reset_at || 0)}${t('ui.reset')}`
             : null"
         />
       </div>
@@ -550,7 +550,7 @@
         class="mt-2 flex items-center justify-between gap-2 text-[9px] text-muted-foreground/70"
       >
         <span>
-          {{ legacyT('模型') }} {{ getWindsurfQuotaDisplay(key)?.allowed_models_count ?? getWindsurfQuotaDisplay(key)?.models?.length }} {{ legacyT('个') }}
+          {{ t('ui.model') }} {{ getWindsurfQuotaDisplay(key)?.allowed_models_count ?? getWindsurfQuotaDisplay(key)?.models?.length }} {{ t('ui.items3a11681') }}
         </span>
         <span
           v-if="getWindsurfModelPreview(key)"
@@ -568,13 +568,13 @@
     class="mt-2 p-2 rounded-md bg-muted/30"
   >
     <ProviderQuotaSectionHeader
-      :title="legacyT('账号配额')"
+      :title="t('ui.accountQuota')"
       :loading="refreshing"
       :updated-text="getChatGPTWebQuotaDisplay(key)?.updated_at ? formatUpdatedAt(getChatGPTWebQuotaDisplay(key)?.updated_at || 0) : null"
     />
     <div>
       <ProviderQuotaProgressRow
-        :label="legacyT('剩余额度')"
+        :label="t('ui.remainingQuota')"
         :used-percent="getChatGPTWebQuotaUsedPercent(key)"
         :remaining-percent="getChatGPTWebQuotaRemainingPercent(key)"
         :meter-class="getQuotaRemainingClass(getChatGPTWebQuotaUsedPercent(key))"
@@ -587,7 +587,7 @@
               {{ formatChatGPTWebUsage(getChatGPTWebQuotaDisplay(key)?.image_quota_total) }}
             </span>
             <span v-if="getChatGPTWebQuotaDisplay(key)?.image_quota_reset_at">
-              {{ formatKiroResetTime(getChatGPTWebQuotaDisplay(key)?.image_quota_reset_at) }}{{ legacyT('重置') }}
+              {{ formatKiroResetTime(getChatGPTWebQuotaDisplay(key)?.image_quota_reset_at) }}{{ t('ui.reset') }}
             </span>
           </div>
         </template>
@@ -683,7 +683,8 @@ defineEmits<{
   consumeResetCredit: []
 }>()
 
-const { legacyT } = useI18n()
+const { t } = useI18n()
+
 const key = computed(() => props.providerKey)
 const providerType = computed(() => props.providerType)
 const refreshing = computed(() => props.refreshing)

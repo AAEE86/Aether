@@ -7,7 +7,7 @@
       <div class="flex items-center justify-between gap-3">
         <div class="min-w-0">
           <p class="text-sm font-medium text-foreground">
-            处理层级
+            {{ t('ui.processingTier') }}
           </p>
           <p class="truncate text-xs text-muted-foreground">
             {{ activeProcessingTierLabel }}
@@ -20,8 +20,8 @@
           size="sm"
           class="h-8 w-8 shrink-0 p-0 text-muted-foreground hover:text-destructive"
           data-testid="processing-tier-remove"
-          :aria-label="`移除 ${activeProcessingTierLabel} 费率`"
-          :title="`移除 ${activeProcessingTierLabel} 费率`"
+          :aria-label="t('ui.removeValueRate', { value: activeProcessingTierLabel })"
+          :title="t('ui.removeValueRate', { value: activeProcessingTierLabel })"
           @click="removeActiveProcessingTier"
         >
           <Trash2 class="h-4 w-4" />
@@ -31,7 +31,7 @@
       <div
         class="flex flex-wrap gap-1"
         role="group"
-        aria-label="处理层级费率"
+        :aria-label="t('ui.processingTierRates')"
       >
         <Button
           v-for="option in processingTierOptions"
@@ -63,7 +63,7 @@
       data-testid="processing-tier-empty"
     >
       <p class="text-sm text-muted-foreground">
-        未配置 {{ activeProcessingTierLabel }} 费率
+        {{ t('ui.notConfigured') }} {{ activeProcessingTierLabel }} {{ t('ui.rate') }}
       </p>
       <div class="flex flex-wrap gap-2">
         <Button
@@ -73,8 +73,7 @@
           data-testid="processing-tier-add-multiplier"
           @click="startActiveProcessingTierMultiplier"
         >
-          <Plus class="mr-2 h-4 w-4" />
-          使用倍率
+          <Plus class="mr-2 h-4 w-4" /> {{ t('ui.useMultiplier') }}
         </Button>
         <Button
           type="button"
@@ -83,8 +82,7 @@
           data-testid="processing-tier-add"
           @click="addActiveProcessingTier"
         >
-          <Plus class="mr-2 h-4 w-4" />
-          添加自定义费率
+          <Plus class="mr-2 h-4 w-4" /> {{ t('ui.addCustomRates') }}
         </Button>
       </div>
     </div>
@@ -96,9 +94,9 @@
     >
       <div class="flex flex-wrap items-end justify-between gap-3">
         <div class="space-y-1">
-          <Label class="text-xs font-medium">层级倍率（相对 Standard）</Label>
+          <Label class="text-xs font-medium">{{ t('ui.tierMultiplierRelativeToStandard') }}</Label>
           <p class="text-xs text-muted-foreground">
-            该层级按 Standard 基准价格统一缩放。
+            {{ t('ui.thisTierScalesAllStandardBasePricesByTheSame') }}
           </p>
         </div>
         <Button
@@ -108,7 +106,7 @@
           data-testid="processing-tier-use-custom"
           @click="useCustomPricingForActiveProcessingTier"
         >
-          改用自定义价格
+          {{ t('ui.useCustomPricing') }}
         </Button>
       </div>
       <div class="relative max-w-40">
@@ -119,8 +117,8 @@
           step="0.01"
           class="h-8 pr-7"
           data-testid="processing-tier-multiplier-input"
-          :aria-label="`${activeProcessingTierLabel} 层级倍率`"
-          placeholder="请输入倍率"
+          :aria-label="t('ui.valueTierMultiplier', { value: activeProcessingTierLabel })"
+          :placeholder="t('ui.enterAMultiplier')"
           @update:model-value="updateActiveProcessingTierMultiplier"
         />
         <span class="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">×</span>
@@ -147,7 +145,7 @@
                     type="number"
                     min="1"
                     class="h-7 w-20 text-sm"
-                    :aria-label="`${activeProcessingTierLabel} 阶梯 ${index + 1} 自定义上限（千 Token）`"
+                    :aria-label="t('ui.valueTierValueCustomLimit1kTokens', { value: activeProcessingTierLabel, value2: index + 1 })"
                     placeholder="K"
                     @keyup.enter="confirmCustomInput(index)"
                     @blur="confirmCustomInput(index)"
@@ -158,7 +156,7 @@
                   v-else
                   :value="getSelectValue(index)"
                   class="h-7 px-2 text-sm border rounded bg-background"
-                  :aria-label="`${activeProcessingTierLabel} 阶梯 ${index + 1} 上限`"
+                  :aria-label="t('ui.valueTierValueLimit', { value: activeProcessingTierLabel, value2: index + 1 })"
                   @change="(e) => handleThresholdChange(index, parseInt((e.target as HTMLSelectElement).value))"
                 >
                   <option
@@ -173,7 +171,7 @@
               <span
                 v-else
                 class="font-medium"
-              >无上限</span>
+              >{{ t('ui.unlimited') }}</span>
             </div>
             <div class="flex items-center gap-1">
               <Button
@@ -181,19 +179,19 @@
                 variant="ghost"
                 size="sm"
                 class="h-7 px-2 text-xs text-muted-foreground"
-                :aria-label="`${activeProcessingTierLabel} 阶梯 ${index + 1} 切换缓存价格输入方式`"
+                :aria-label="t('ui.valueTierValueSwitchCachePricingInputMode', { value: activeProcessingTierLabel, value2: index + 1 })"
                 @click="toggleCachePriceMode(index)"
               >
                 <Repeat2 class="mr-1 h-3.5 w-3.5" />
-                {{ getCachePriceMode(index) === 'multiplier' ? '价格' : '倍率' }}
+                {{ getCachePriceMode(index) === 'multiplier' ? t('ui.price') : t('ui.multiplier') }}
               </Button>
               <Button
                 v-if="localTiers.length > 1"
                 variant="ghost"
                 size="sm"
                 class="h-7 w-7 p-0"
-                :aria-label="`删除 ${activeProcessingTierLabel} 阶梯 ${index + 1}`"
-                :title="`删除 ${activeProcessingTierLabel} 阶梯 ${index + 1}`"
+                :aria-label="t('ui.deleteValueTierValue', { value: activeProcessingTierLabel, value2: index + 1 })"
+                :title="t('ui.deleteValueTierValue', { value: activeProcessingTierLabel, value2: index + 1 })"
                 @click="removeTier(index)"
               >
                 <X class="w-4 h-4 text-muted-foreground hover:text-destructive" />
@@ -207,7 +205,7 @@
             :class="[showCache1h ? 'grid-cols-2 lg:grid-cols-5' : 'grid-cols-2 lg:grid-cols-4']"
           >
             <div class="space-y-1">
-              <Label class="text-xs">输入 ($/M)</Label>
+              <Label class="text-xs">{{ t('ui.inputM') }}</Label>
               <Input
                 :model-value="tier.input_price_per_1m"
                 data-testid="tier-input-price"
@@ -216,27 +214,27 @@
                 step="0.01"
                 min="0"
                 class="h-8"
-                :aria-label="`${activeProcessingTierLabel} 阶梯 ${index + 1} 输入价格（美元/百万 Token）`"
+                :aria-label="t('ui.valueTierValueInputPriceUsd1mTokens', { value: activeProcessingTierLabel, value2: index + 1 })"
                 placeholder="0"
                 @update:model-value="(v) => updateInputPrice(index, parseFloatInput(v))"
               />
             </div>
             <div class="space-y-1">
-              <Label class="text-xs">输出 ($/M)</Label>
+              <Label class="text-xs">{{ t('ui.outputM') }}</Label>
               <Input
                 :model-value="tier.output_price_per_1m"
                 type="number"
                 step="0.01"
                 min="0"
                 class="h-8"
-                :aria-label="`${activeProcessingTierLabel} 阶梯 ${index + 1} 输出价格（美元/百万 Token）`"
+                :aria-label="t('ui.valueTierValueOutputPriceUsd1mTokens', { value: activeProcessingTierLabel, value2: index + 1 })"
                 placeholder="0"
                 @update:model-value="(v) => updateOutputPrice(index, parseFloatInput(v))"
               />
             </div>
             <div class="space-y-1">
               <Label class="text-xs text-muted-foreground">
-                {{ getCachePriceMode(index) === 'multiplier' ? '创建（倍率）' : '创建 ($/M)' }}
+                {{ getCachePriceMode(index) === 'multiplier' ? t('ui.writeMultiplier') : t('ui.writeM') }}
               </Label>
               <div class="relative">
                 <Input
@@ -246,7 +244,7 @@
                   min="0"
                   class="h-8"
                   :class="getCachePriceMode(index) === 'multiplier' ? 'pr-7' : ''"
-                  :aria-label="`${activeProcessingTierLabel} 阶梯 ${index + 1} 缓存创建${getCachePriceMode(index) === 'multiplier' ? '倍率' : '价格'}`"
+                  :aria-label="t('ui.valueTierValueCacheCreationValue', { value: activeProcessingTierLabel, value2: index + 1, value3: getCachePriceMode(index) === 'multiplier' ? '倍率' : '价格' })"
                   placeholder="0"
                   @update:model-value="(v) => updateCacheCreation(index, v)"
                 />
@@ -258,7 +256,7 @@
             </div>
             <div class="space-y-1">
               <Label class="text-xs text-muted-foreground">
-                {{ getCachePriceMode(index) === 'multiplier' ? '读取（倍率）' : '读取 ($/M)' }}
+                {{ getCachePriceMode(index) === 'multiplier' ? t('ui.readMultiplier') : t('ui.readM') }}
               </Label>
               <div class="relative">
                 <Input
@@ -268,7 +266,7 @@
                   min="0"
                   class="h-8"
                   :class="getCachePriceMode(index) === 'multiplier' ? 'pr-7' : ''"
-                  :aria-label="`${activeProcessingTierLabel} 阶梯 ${index + 1} 缓存读取${getCachePriceMode(index) === 'multiplier' ? '倍率' : '价格'}`"
+                  :aria-label="t('ui.valueTierValueCacheReadValue', { value: activeProcessingTierLabel, value2: index + 1, value3: getCachePriceMode(index) === 'multiplier' ? '倍率' : '价格' })"
                   placeholder="0"
                   @update:model-value="(v) => updateCacheRead(index, v)"
                 />
@@ -282,14 +280,14 @@
               v-if="showCache1h"
               class="space-y-1"
             >
-              <Label class="text-xs text-muted-foreground">1h 缓存</Label>
+              <Label class="text-xs text-muted-foreground">{{ t('ui.1hCache') }}</Label>
               <Input
                 :model-value="getCache1hDisplay(index)"
                 type="number"
                 step="0.01"
                 min="0"
                 class="h-8"
-                :aria-label="`${activeProcessingTierLabel} 阶梯 ${index + 1} 一小时缓存价格`"
+                :aria-label="t('ui.valueTierValueOneHourCachePrice', { value: activeProcessingTierLabel, value2: index + 1 })"
                 :placeholder="getCache1hPlaceholder(index)"
                 @update:model-value="(v) => updateCache1h(index, v)"
               />
@@ -304,8 +302,7 @@
           class="w-full"
           @click="addTier"
         >
-          <Plus class="w-4 h-4 mr-2" />
-          添加价格阶梯
+          <Plus class="w-4 h-4 mr-2" /> {{ t('ui.addPricingTier') }}
         </Button>
       </template>
     </template>
@@ -317,10 +314,10 @@
     >
       <div class="space-y-1">
         <p class="text-sm font-medium text-foreground">
-          层级倍率（相对标准价格）
+          {{ t('ui.tierMultiplierRelativeToStandardPricing') }}
         </p>
         <p class="text-xs text-muted-foreground">
-          配置模型级默认倍率；层级是否可用由 Provider 端点/API 格式决定。
+          {{ t('ui.configureTheDefaultModelMultiplierTierAvailabilityDependsOnThe') }}
         </p>
       </div>
       <div class="space-y-3">
@@ -349,7 +346,7 @@
             >
               <Checkbox
                 :checked="option.enabled"
-                :aria-label="`启用 ${option.accessibleLabel} 层级倍率`"
+                :aria-label="t('ui.enableValueTierMultiplier', { value: option.accessibleLabel })"
                 @update:checked="enabled => setCompactProcessingTierEnabled(option.key, enabled)"
               />
               <div class="min-w-32 flex-1">
@@ -366,11 +363,11 @@
                   v-if="option.mode === 'custom'"
                   class="text-xs text-muted-foreground"
                 >
-                  已配置自定义价格目录
+                  {{ t('ui.customPricingCatalogConfigured') }}
                 </p>
               </div>
               <template v-if="option.mode === 'custom'">
-                <span class="rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground">自定义价格</span>
+                <span class="rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground">{{ t('ui.customPricing') }}</span>
                 <Button
                   type="button"
                   variant="outline"
@@ -378,7 +375,7 @@
                   :data-testid="`processing-tier-convert-${option.key}`"
                   @click="startProcessingTierMultiplier(option.key)"
                 >
-                  改用倍率
+                  {{ t('ui.useMultipliera244c8c') }}
                 </Button>
               </template>
               <div
@@ -393,8 +390,8 @@
                   class="h-8 pr-7"
                   :disabled="!option.enabled"
                   :data-testid="`processing-tier-multiplier-${option.key}`"
-                  :aria-label="`${option.accessibleLabel} 层级倍率`"
-                  placeholder="未设置"
+                  :aria-label="t('ui.valueTierMultiplier', { value: option.accessibleLabel })"
+                  :placeholder="t('ui.notSet')"
                   @update:model-value="value => updateProcessingTierMultiplier(option.key, value)"
                 />
                 <span class="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">×</span>
@@ -410,16 +407,16 @@
       class="space-y-3 border-t border-border/60 pt-3"
     >
       <div class="flex flex-wrap items-end justify-between gap-3">
-        <Label class="text-xs font-medium">图像输出计费 ($/张)</Label>
+        <Label class="text-xs font-medium">{{ t('ui.imageOutputPricingImage') }}</Label>
         <div class="flex items-center gap-2">
-          <Label class="text-xs text-muted-foreground">默认价</Label>
+          <Label class="text-xs text-muted-foreground">{{ t('ui.defaultPrice') }}</Label>
           <Input
             :model-value="imageOutputPriceDefault"
             type="number"
             step="0.001"
             min="0"
             class="h-8 w-24"
-            :aria-label="`${activeProcessingTierLabel} 图像输出默认价格`"
+            :aria-label="t('ui.valueDefaultImageOutputPrice', { value: activeProcessingTierLabel })"
             placeholder="0"
             @update:model-value="updateImageOutputPriceDefault"
           />
@@ -428,13 +425,13 @@
 
       <div class="space-y-2">
         <div class="flex items-center justify-between gap-2">
-          <Label class="text-xs text-muted-foreground">精确分辨率覆盖</Label>
-          <span class="text-[11px] text-muted-foreground">优先匹配 size + quality</span>
+          <Label class="text-xs text-muted-foreground">{{ t('ui.exactResolutionOverrides') }}</Label>
+          <span class="text-[11px] text-muted-foreground">{{ t('ui.matchSizeQualityFirst') }}</span>
         </div>
         <div class="overflow-x-auto pb-1">
           <div class="min-w-[32rem] space-y-2">
             <div class="grid grid-cols-[minmax(120px,1.1fr)_repeat(3,minmax(0,1fr))_32px] gap-2 text-xs text-muted-foreground">
-              <span>分辨率</span>
+              <span>{{ t('ui.resolution') }}</span>
               <span>low</span>
               <span>medium</span>
               <span>high</span>
@@ -448,7 +445,7 @@
               <Input
                 :model-value="row.size"
                 class="h-8 font-mono text-xs"
-                :aria-label="`图像输出分辨率 ${rowIndex + 1}`"
+                :aria-label="t('ui.imageOutputResolutionValue', { value: rowIndex + 1 })"
                 placeholder="1024x1024"
                 @update:model-value="(v) => updateImageOutputSize(row.id, v)"
               />
@@ -460,7 +457,7 @@
                 step="0.001"
                 min="0"
                 class="h-8"
-                :aria-label="`${row.size || `分辨率 ${rowIndex + 1}`} ${quality} 图像输出价格`"
+                :aria-label="t('ui.valueValueImageOutputPrice', { value: row.size || `分辨率 ${rowIndex + 1}`, value2: quality })"
                 placeholder="0"
                 @update:model-value="(v) => updateImageOutputPrice(row.id, quality, v)"
               />
@@ -469,8 +466,8 @@
                 variant="ghost"
                 size="sm"
                 class="h-8 w-8 p-0"
-                :aria-label="`删除图像输出分辨率 ${row.size || rowIndex + 1}`"
-                :title="`删除图像输出分辨率 ${row.size || rowIndex + 1}`"
+                :aria-label="t('ui.deleteImageOutputResolutionValue', { value: row.size || rowIndex + 1 })"
+                :title="t('ui.deleteImageOutputResolutionValue', { value: row.size || rowIndex + 1 })"
                 @click="removeImageOutputSizeRow(row.id)"
               >
                 <X class="h-4 w-4 text-muted-foreground hover:text-destructive" />
@@ -485,20 +482,19 @@
           class="w-full"
           @click="addImageOutputSizeRow"
         >
-          <Plus class="w-4 h-4 mr-2" />
-          添加分辨率
+          <Plus class="w-4 h-4 mr-2" /> {{ t('ui.addResolution') }}
         </Button>
       </div>
 
       <div class="space-y-2 border-t pt-3">
         <div class="flex items-center justify-between gap-2">
-          <Label class="text-xs text-muted-foreground">像素区间</Label>
-          <span class="text-[11px] text-muted-foreground">矩阵未命中时按宽×高落档</span>
+          <Label class="text-xs text-muted-foreground">{{ t('ui.pixelRange') }}</Label>
+          <span class="text-[11px] text-muted-foreground">{{ t('ui.useWidthHeightRangesWhenThereIsNoMatrixMatch') }}</span>
         </div>
         <div class="overflow-x-auto pb-1">
           <div class="min-w-[32rem] space-y-2">
             <div class="grid grid-cols-[minmax(120px,1.1fr)_repeat(3,minmax(0,1fr))_32px] gap-2 text-xs text-muted-foreground">
-              <span>上限像素</span>
+              <span>{{ t('ui.maxPixels') }}</span>
               <span>low</span>
               <span>medium</span>
               <span>high</span>
@@ -514,8 +510,8 @@
                 type="number"
                 min="1"
                 class="h-8 font-mono text-xs"
-                :aria-label="`图像像素区间 ${rowIndex + 1} 上限`"
-                placeholder="空=无上限"
+                :aria-label="t('ui.imagePixelRangeValueLimit', { value: rowIndex + 1 })"
+                :placeholder="t('ui.emptyUnlimitedeb32530')"
                 @update:model-value="(v) => updateImageOutputRangeLimit(row.id, v)"
               />
               <Input
@@ -526,7 +522,7 @@
                 step="0.001"
                 min="0"
                 class="h-8"
-                :aria-label="`图像像素区间 ${rowIndex + 1} ${quality} 价格`"
+                :aria-label="t('ui.imagePixelRangeValueValuePrice', { value: rowIndex + 1, value2: quality })"
                 placeholder="0"
                 @update:model-value="(v) => updateImageOutputRangePrice(row.id, quality, v)"
               />
@@ -535,8 +531,8 @@
                 variant="ghost"
                 size="sm"
                 class="h-8 w-8 p-0"
-                :aria-label="`删除图像像素区间 ${rowIndex + 1}`"
-                :title="`删除图像像素区间 ${rowIndex + 1}`"
+                :aria-label="t('ui.deleteImagePixelRangeValue', { value: rowIndex + 1 })"
+                :title="t('ui.deleteImagePixelRangeValue', { value: rowIndex + 1 })"
                 @click="removeImageOutputRangeRow(row.id)"
               >
                 <X class="h-4 w-4 text-muted-foreground hover:text-destructive" />
@@ -551,8 +547,7 @@
           class="w-full"
           @click="addImageOutputRangeRow"
         >
-          <Plus class="w-4 h-4 mr-2" />
-          添加像素区间
+          <Plus class="w-4 h-4 mr-2" /> {{ t('ui.addPixelRange') }}
         </Button>
       </div>
     </div>
@@ -570,6 +565,8 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+
 import { ref, computed, watch, reactive } from 'vue'
 import { Plus, Repeat2, Trash2, X } from 'lucide-vue-next'
 import { Button, Checkbox, Input, Label } from '@/components/ui'
@@ -648,6 +645,8 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   'update:modelValue': [value: TieredPricingConfig | null]
 }>()
+
+const { t } = useI18n()
 
 // 本地状态
 const basePricingConfig = ref<Record<string, unknown>>({})
@@ -790,7 +789,7 @@ const THRESHOLD_OPTIONS = [
   { value: 272000, label: '272K' },
   { value: 500000, label: '500K' },
   { value: 1000000, label: '1M' },
-  { value: -1, label: '自定义...' },  // 特殊值表示自定义输入
+  { value: -1, get label() { return t('ui.custom') } },  // 特殊值表示自定义输入
 ]
 
 // 跟踪哪些阶梯正在使用自定义输入
@@ -1255,11 +1254,11 @@ function validatePricingScope(scope: string): string | null {
 
 function validateImagePricingScope(scope: string): string | null {
   const state = imagePricingStateByScope[scope]
-  if (!state) return '缺少图像价格状态'
+  if (!state) return t('ui.imagePricingStateIsMissing')
 
   if (state.defaultPrice.trim() !== '') {
     const price = parseOptionalFloat(state.defaultPrice)
-    if (price == null || price < 0) return '图像输出默认价格必须是非负有限数值'
+    if (price == null || price < 0) return t('ui.defaultImageOutputPriceMustBeAFiniteNonNegative')
   }
 
   const sizes = new Set<string>()
@@ -1285,7 +1284,7 @@ function validateImagePricingScope(scope: string): string | null {
     if (row.upToPixels.trim() !== '' && limit == null) {
       return `图像像素区间 ${index + 1} 的上限必须是正整数`
     }
-    if (limits.has(limit)) return '图像像素区间上限不能重复'
+    if (limits.has(limit)) return t('ui.imagePixelRangeLimitsMustBeUnique')
     limits.add(limit)
   }
   return null
@@ -1321,7 +1320,7 @@ function getAvailableThresholds(index: number) {
     index === localTiers.value.length - 1
     && pricingScopePolicy(activePricingScope.value).terminalUpperBound === 'finite-or-unbounded'
   ) {
-    options.unshift({ value: UNBOUNDED_THRESHOLD_VALUE, label: '无上限' })
+    options.unshift({ value: UNBOUNDED_THRESHOLD_VALUE, get label() { return t('ui.unlimited') } })
   }
 
   // 如果当前值是自定义的（不在预设中），添加到选项列表
@@ -1830,4 +1829,5 @@ function removeTier(index: number) {
 
   syncToParent()
 }
+
 </script>

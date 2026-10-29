@@ -5,7 +5,7 @@
   >
     <div class="flex flex-wrap items-center gap-3 border-b px-4 py-3 sm:px-5">
       <h2 class="shrink-0 text-sm font-medium">
-        邀请关系<span class="ml-2 text-xs font-normal text-muted-foreground">{{ total }} 条记录</span>
+        {{ t('ui.referralRelationships') }}<span class="ml-2 text-xs font-normal text-muted-foreground">{{ total }} {{ t('ui.records6016bf6') }}</span>
       </h2>
       <form
         class="flex min-w-0 basis-full flex-wrap items-center gap-2 lg:flex-1 lg:basis-0"
@@ -14,28 +14,28 @@
         <ReferralUserSelect
           v-model="filters.inviter"
           class="w-full sm:w-36"
-          label="邀请人"
+          :label="t('ui.inviter')"
         /><ReferralUserSelect
           v-model="filters.invitee"
           class="w-full sm:w-36"
-          label="被邀请人"
+          :label="t('ui.invitee')"
         /><Input
           v-model="filters.invite_code"
           class="h-9 w-full sm:w-36"
-          placeholder="邀请码"
-          aria-label="邀请码"
+          :placeholder="t('auth.register.inviteCodeLabel')"
+          :aria-label="t('auth.register.inviteCodeLabel')"
         />
         <select
           v-model="filters.first_paid"
           class="h-9 w-full min-w-0 rounded-lg border border-border bg-background px-2 text-sm sm:w-auto"
-          aria-label="首付状态"
+          :aria-label="t('ui.firstPaymentStatus')"
         >
           <option value="all">
-            全部首付状态
+            {{ t('ui.allFirstPaymentStatuses') }}
           </option><option value="true">
-            已首付
+            {{ t('ui.firstPaymentCompleted') }}
           </option><option value="false">
-            未首付
+            {{ t('ui.noFirstPayment') }}
           </option>
         </select>
         <div class="flex gap-1 sm:ml-auto">
@@ -46,7 +46,7 @@
             class="h-9"
             :aria-busy="loading"
           >
-            <Search class="mr-1.5 h-3.5 w-3.5" />查询
+            <Search class="mr-1.5 h-3.5 w-3.5" />{{ t('ui.search') }}
           </Button><Button
             type="button"
             variant="ghost"
@@ -54,7 +54,7 @@
             class="h-9 text-muted-foreground"
             @click="$emit('reset')"
           >
-            重置
+            {{ t('ui.reset') }}
           </Button>
         </div>
       </form>
@@ -69,7 +69,7 @@
         size="sm"
         @click="$emit('reload')"
       >
-        重试
+        {{ t('vscodex.connection.retry') }}
       </Button>
     </div>
     <div
@@ -77,14 +77,14 @@
       role="status"
       class="flex items-center justify-center gap-2 py-14 text-sm text-muted-foreground"
     >
-      <LoaderCircle class="h-4 w-4 animate-spin" />正在加载邀请关系…
+      <LoaderCircle class="h-4 w-4 animate-spin" />{{ t('ui.loadingReferralRelationships') }}
     </div>
     <div
       v-else-if="!items.length"
       class="flex flex-col items-center gap-3 px-5 py-14 text-center"
     >
       <span class="flex h-11 w-11 items-center justify-center rounded-2xl bg-muted/60 text-muted-foreground"><Users class="h-5 w-5" /></span><p class="text-sm text-muted-foreground">
-        暂无符合条件的邀请关系
+        {{ t('ui.noInvitationsMatchTheFilters') }}
       </p>
     </div>
     <template v-else>
@@ -93,9 +93,9 @@
           <TableHeader>
             <TableRow class="bg-muted/25">
               <TableHead class="pl-5">
-                邀请人
-              </TableHead><TableHead>被邀请人</TableHead><TableHead>邀请码</TableHead><TableHead>绑定时间</TableHead><TableHead>首次实际付款</TableHead><TableHead class="pr-5 text-right">
-                操作
+                {{ t('ui.inviter') }}
+              </TableHead><TableHead>{{ t('ui.invitee') }}</TableHead><TableHead>{{ t('auth.register.inviteCodeLabel') }}</TableHead><TableHead>{{ t('ui.boundAt') }}</TableHead><TableHead>{{ t('ui.firstActualPayment') }}</TableHead><TableHead class="pr-5 text-right">
+                {{ t('ui.actionsed31fbb') }}
               </TableHead>
             </TableRow>
           </TableHeader>
@@ -116,7 +116,7 @@
                     variant="ghost"
                     size="sm"
                     class="copy-button"
-                    aria-label="复制邀请人 ID"
+                    :aria-label="t('ui.copyInviterId')"
                     @click="$emit('copy', item.inviter_user_id)"
                   >
                     <Copy class="h-3.5 w-3.5" />
@@ -135,7 +135,7 @@
                     variant="ghost"
                     size="sm"
                     class="copy-button"
-                    aria-label="复制被邀请人 ID"
+                    :aria-label="t('ui.copyInviteeId')"
                     @click="$emit('copy', item.invitee_user_id)"
                   >
                     <Copy class="h-3.5 w-3.5" />
@@ -148,7 +148,7 @@
                     variant="ghost"
                     size="sm"
                     class="copy-button"
-                    aria-label="复制邀请码"
+                    :aria-label="t('ui.copyInviteCode')"
                     @click="$emit('copy', item.invite_code_snapshot)"
                   >
                     <Copy class="h-3.5 w-3.5" />
@@ -161,13 +161,13 @@
               <TableCell>
                 <div class="flex items-center gap-1">
                   <Badge :variant="item.first_paid_order_id ? 'success' : 'secondary'">
-                    {{ item.first_paid_order_id ? '已首付' : '未首付' }}
+                    {{ item.first_paid_order_id ? t('ui.firstPaymentCompleted') : t('ui.noFirstPayment') }}
                   </Badge><Button
                     v-if="item.first_paid_order_id"
                     variant="ghost"
                     size="sm"
                     class="copy-button"
-                    aria-label="复制首付订单 ID"
+                    :aria-label="t('ui.copyFirstPaymentOrderId')"
                     @click="$emit('copy', item.first_paid_order_id)"
                   >
                     <Copy class="h-3.5 w-3.5" />
@@ -186,7 +186,7 @@
                   class="h-8 px-2 text-primary"
                   @click="$emit('rewards', item.id)"
                 >
-                  查看返利<ChevronRight class="ml-1 h-3.5 w-3.5" />
+                  {{ t('ui.viewRewards') }}<ChevronRight class="ml-1 h-3.5 w-3.5" />
                 </Button>
               </TableCell>
             </TableRow>
@@ -209,7 +209,7 @@
                   variant="ghost"
                   size="sm"
                   class="copy-button"
-                  aria-label="复制邀请人 ID"
+                  :aria-label="t('ui.copyInviterId')"
                   @click="$emit('copy', item.inviter_user_id)"
                 >
                   <Copy class="h-3.5 w-3.5" />
@@ -219,7 +219,7 @@
                   variant="ghost"
                   size="sm"
                   class="copy-button"
-                  aria-label="复制被邀请人 ID"
+                  :aria-label="t('ui.copyInviteeId')"
                   @click="$emit('copy', item.invitee_user_id)"
                 >
                   <Copy class="h-3.5 w-3.5" />
@@ -229,32 +229,32 @@
               class="shrink-0"
               :variant="item.first_paid_order_id ? 'success' : 'secondary'"
             >
-              {{ item.first_paid_order_id ? '已首付' : '未首付' }}
+              {{ item.first_paid_order_id ? t('ui.firstPaymentCompleted') : t('ui.noFirstPayment') }}
             </Badge>
           </div>
           <div class="flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
-            <span>邀请码</span><code class="rounded-md bg-muted/50 px-2 py-1 text-foreground">{{ item.invite_code_snapshot }}</code><Button
+            <span>{{ t('auth.register.inviteCodeLabel') }}</span><code class="rounded-md bg-muted/50 px-2 py-1 text-foreground">{{ item.invite_code_snapshot }}</code><Button
               variant="ghost"
               size="sm"
               class="copy-button"
-              aria-label="复制邀请码"
+              :aria-label="t('ui.copyInviteCode')"
               @click="$emit('copy', item.invite_code_snapshot)"
             >
               <Copy class="h-3.5 w-3.5" />
             </Button>
           </div>
           <p class="text-xs text-muted-foreground">
-            绑定于 {{ date(item.created_at_unix_secs) }}
+            {{ t('ui.linkedOn') }} {{ date(item.created_at_unix_secs) }}
           </p>
           <div
             v-if="item.first_paid_order_id"
             class="flex items-center gap-1 text-xs text-muted-foreground"
           >
-            <p>首付于 {{ date(item.first_paid_at_unix_secs) }}</p><Button
+            <p>{{ t('ui.firstPaidOn') }} {{ date(item.first_paid_at_unix_secs) }}</p><Button
               variant="ghost"
               size="sm"
               class="copy-button"
-              aria-label="复制首付订单 ID"
+              :aria-label="t('ui.copyFirstPaymentOrderId')"
               @click="$emit('copy', item.first_paid_order_id)"
             >
               <Copy class="h-3.5 w-3.5" />
@@ -267,7 +267,7 @@
               class="h-8"
               @click="$emit('rewards', item.id)"
             >
-              查看返利<ChevronRight class="ml-1 h-3.5 w-3.5" />
+              {{ t('ui.viewRewards') }}<ChevronRight class="ml-1 h-3.5 w-3.5" />
             </Button>
           </div>
         </article>
@@ -284,6 +284,8 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+
 import { ChevronRight, Copy, CornerDownRight, LoaderCircle, Search, Users } from 'lucide-vue-next'
 import type { ReferralRelationshipRecord } from '@/api/referrals'
 import { Badge, Button, Card, Input, Pagination, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui'
@@ -292,8 +294,11 @@ import ReferralUserSelect from './ReferralUserSelect.vue'
 
 defineProps<{ items: ReferralRelationshipRecord[]; total: number; page: number; pageSize: number; loading: boolean; error: string }>()
 defineEmits<{ query: []; reset: []; reload: []; page: [value: number]; size: [value: number]; rewards: [id: string]; copy: [value: string] }>()
+
+const { t } = useI18n()
 const filters = defineModel<{ inviter: string; invitee: string; invite_code: string; first_paid: string }>('filters', { required: true })
 const initial = (name: string) => Array.from(name)[0]?.toLocaleUpperCase() || '?'
+
 </script>
 
 <style scoped>

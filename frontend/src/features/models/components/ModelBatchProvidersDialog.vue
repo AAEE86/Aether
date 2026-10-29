@@ -1,8 +1,8 @@
 <template>
   <Dialog
     :model-value="open"
-    :title="model ? `批量管理提供商 - ${model.display_name}` : '批量管理提供商'"
-    description="选中的提供商将被关联到模型，取消选中将移除关联"
+    :title="model ? t('ui.manageProvidersInBulkValue', { name: model.display_name }) : t('ui.manageProvidersInBulk')"
+    :description="t('ui.selectedProvidersAreLinkedToTheModelDeselectingAProvider')"
     :icon="Server"
     size="2xl"
     @update:model-value="handleBatchAddProvidersDialogUpdate"
@@ -15,7 +15,7 @@
             <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
             <Input
               v-model="batchProviderSearchQuery"
-              placeholder="搜索提供商..."
+              :placeholder="t('ui.searchProviders')"
               class="pl-8 h-9"
             />
           </div>
@@ -38,7 +38,7 @@
                   class="flex items-center justify-between px-3 py-2 bg-muted sticky top-0 z-10"
                 >
                   <div class="flex items-center gap-2">
-                    <span class="text-xs font-medium">提供商</span>
+                    <span class="text-xs font-medium">{{ t('nav.providers') }}</span>
                     <span class="text-xs text-muted-foreground">({{ filteredBatchProviders.length }})</span>
                   </div>
                   <button
@@ -46,7 +46,7 @@
                     class="text-xs text-primary hover:underline shrink-0"
                     @click="toggleAllBatchProviders"
                   >
-                    {{ isAllBatchProvidersSelected ? '取消全选' : '全选' }}
+                    {{ isAllBatchProvidersSelected ? t('ui.deselectAll') : t('ui.selectAll') }}
                   </button>
                 </div>
                 <div class="space-y-1 p-2">
@@ -75,7 +75,7 @@
                       :class="provider.is_active ? 'text-green-600 border-green-500/60' : ''"
                       class="text-xs shrink-0"
                     >
-                      {{ provider.is_active ? '活跃' : '停用' }}
+                      {{ provider.is_active ? t('ui.activee85e590') : t('ui.disable4e6fd0e') }}
                     </Badge>
                   </div>
                 </div>
@@ -88,7 +88,7 @@
               >
                 <Building2 class="w-10 h-10 mb-2 opacity-30" />
                 <p class="text-sm">
-                  {{ batchProviderSearchQuery ? '无匹配结果' : '暂无可用提供商' }}
+                  {{ batchProviderSearchQuery ? t('ui.noMatchingResults') : t('ui.noProvidersAvailable') }}
                 </p>
               </div>
             </template>
@@ -99,7 +99,7 @@
     <template #footer>
       <div class="flex items-center justify-between w-full">
         <p class="text-xs text-muted-foreground">
-          {{ hasBatchProviderChanges ? `${batchProviderPendingChangesCount} 项更改待保存` : '' }}
+          {{ hasBatchProviderChanges ? t('ui.valueChangesToSave', { count: batchProviderPendingChangesCount }) : '' }}
         </p>
         <div class="flex items-center gap-2">
           <Button
@@ -110,13 +110,13 @@
               v-if="submittingBatchProviders"
               class="w-4 h-4 mr-1 animate-spin"
             />
-            {{ submittingBatchProviders ? '保存中...' : '保存' }}
+            {{ submittingBatchProviders ? t('ui.saving') : t('ui.save') }}
           </Button>
           <Button
             variant="outline"
             @click="closeBatchAddProvidersDialog"
           >
-            关闭
+            {{ t('ui.close') }}
           </Button>
         </div>
       </div>
@@ -125,6 +125,8 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+
 import { computed, ref, watch } from 'vue'
 import { Building2, Check, Loader2, Search, Server } from 'lucide-vue-next'
 import { Badge, Button, Dialog, Input } from '@/components/ui'
@@ -147,6 +149,8 @@ const emit = defineEmits<{
   'update:open': [value: boolean]
   saved: []
 }>()
+
+const { t } = useI18n()
 
 const { success, error: showError } = useToast()
 
@@ -276,7 +280,7 @@ async function saveBatchProviderChanges() {
         if (result.status === 'fulfilled' && result.value !== null) {
           totalSuccess++
         } else if (result.status === 'rejected') {
-          allErrors.push(parseApiError(result.reason, '移除失败'))
+          allErrors.push(parseApiError(result.reason, t('ui.failedToRemove')))
         }
       }
     }
@@ -294,17 +298,17 @@ async function saveBatchProviderChanges() {
     }
 
     if (totalSuccess > 0) {
-      success(`成功处理 ${totalSuccess} 个提供商`)
+      success(t('ui.successfullyProcessedValueProviders', { count: totalSuccess }))
     }
 
     if (allErrors.length > 0) {
-      showError(`部分操作失败: ${allErrors.slice(0, 3).join(', ')}${allErrors.length > 3 ? '...' : ''}`, '警告')
+      showError(t('ui.someOperationsFailedValueValue', { value: allErrors.slice(0, 3).join(', '), count: allErrors.length > 3 ? '...' : '' }), t('ui.warning'))
     }
 
     emit('saved')
     closeBatchAddProvidersDialog()
   } catch (err: unknown) {
-    showError(parseApiError(err, '保存失败'), '错误')
+    showError(parseApiError(err, t('ui.failedToSave')), t('ui.error'))
   } finally {
     submittingBatchProviders.value = false
   }
@@ -324,8 +328,8 @@ async function ensureProviderOptions() {
       loadingProviderOptions.value = true
       providerOptions.value = (await getProvidersSummary({ page_size: 9999 })).items
     } catch (err: unknown) {
-      const message = parseApiError(err, '加载 Provider 列表失败')
-      showError(message, '错误')
+      const message = parseApiError(err, t('ui.failedToLoadProviders'))
+      showError(message, t('ui.error'))
     } finally {
       loadingProviderOptions.value = false
     }
@@ -362,4 +366,5 @@ watch(() => props.open, (open) => {
     syncBatchProviderSelection()
   })
 })
+
 </script>

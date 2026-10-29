@@ -4,13 +4,13 @@
       <div>
         <div class="flex items-center gap-2">
           <h4 class="text-sm font-semibold">
-            {{ legacyT('节点数据') }}
+            {{ t('ui.nodeData') }}
           </h4>
           <Badge
             variant="outline"
             class="text-[10px] px-1.5 py-0"
           >
-            {{ legacyT('最近 24 小时') }}
+            {{ t('ui.last24Hoursab2c188') }}
           </Badge>
         </div>
         <p class="text-xs text-muted-foreground mt-1">
@@ -28,7 +28,7 @@
           class="h-3.5 w-3.5 mr-1"
           :class="state?.loading ? 'animate-spin' : ''"
         />
-        {{ legacyT('刷新') }}
+        {{ t('ui.refresh') }}
       </Button>
     </div>
 
@@ -37,7 +37,7 @@
       class="py-8 flex items-center justify-center gap-2 text-sm text-muted-foreground"
     >
       <Loader2 class="h-4 w-4 animate-spin" />
-      {{ legacyT('加载节点数据...') }}
+      {{ t('ui.loadingNodeData') }}
     </div>
 
     <div
@@ -59,7 +59,7 @@
           class="rounded-lg border border-border/50 bg-background/70 px-3 py-2 min-w-0"
         >
           <div class="text-[11px] text-muted-foreground truncate">
-            {{ legacyT(item.label) }}
+            {{ item.label }}
           </div>
           <div
             class="text-sm font-semibold tabular-nums truncate mt-0.5"
@@ -71,7 +71,7 @@
             v-if="item.hint"
             class="text-[10px] text-muted-foreground truncate mt-0.5"
           >
-            {{ legacyT(item.hint) }}
+            {{ item.hint }}
           </div>
         </div>
       </div>
@@ -81,13 +81,13 @@
           <div class="flex items-center justify-between gap-3 mb-3">
             <div>
               <h5 class="text-xs font-semibold">
-                {{ legacyT('在线率采样') }}
+                {{ t('ui.uptimeSamples') }}
               </h5>
               <p class="text-[11px] text-muted-foreground mt-0.5">
-                {{ legacyT('1h 桶，颜色随在线率和错误数变化') }}
+                {{ t('ui.1hBucketsColorChangesWithUptimeAndErrorCount') }}
               </p>
             </div>
-            <span class="text-[11px] text-muted-foreground tabular-nums shrink-0">{{ legacyT(`${formatNumber(bucketItems.length)} 点`) }}</span>
+            <span class="text-[11px] text-muted-foreground tabular-nums shrink-0">{{ t('ui.valuePoints', { count: formatNumber(bucketItems.length) }) }}</span>
           </div>
           <div
             v-if="bucketItems.length > 0"
@@ -105,14 +105,14 @@
             v-else
             class="h-20 rounded-md bg-muted/30 flex items-center justify-center text-xs text-muted-foreground"
           >
-            {{ legacyT('暂无采样数据') }}
+            {{ t('ui.noSampleData') }}
           </div>
         </section>
 
         <section class="rounded-lg border border-border/50 bg-background/70 p-3 min-w-0">
           <div class="flex items-center justify-between gap-2 mb-3">
             <h5 class="text-xs font-semibold">
-              {{ legacyT('最近事件') }}
+              {{ t('ui.recentEvents') }}
             </h5>
             <span class="text-[11px] text-muted-foreground tabular-nums">{{ recentEvents.length }}/8</span>
           </div>
@@ -120,7 +120,7 @@
             v-if="recentEvents.length === 0"
             class="h-20 rounded-md bg-muted/30 flex items-center justify-center text-xs text-muted-foreground"
           >
-            {{ legacyT('暂无关键事件') }}
+            {{ t('ui.noKeyEvents') }}
           </div>
           <div
             v-else
@@ -135,12 +135,12 @@
                 :variant="eventTypeVariant(event.event_type)"
                 class="text-[10px] px-1.5 py-0 shrink-0"
               >
-                {{ legacyT(eventTypeLabel(event.event_type)) }}
+                {{ eventTypeLabel(event.event_type) }}
               </Badge>
               <span
                 class="text-muted-foreground truncate flex-1"
-                :title="legacyT(eventTooltip(event))"
-              >{{ legacyT(eventDetail(event)) }}</span>
+                :title="eventTooltip(event)"
+              >{{ eventDetail(event) }}</span>
               <span class="text-[10px] text-muted-foreground/70 tabular-nums shrink-0">{{ formatTime(event.created_at || null) }}</span>
             </div>
           </div>
@@ -150,7 +150,7 @@
       <div class="grid gap-4 lg:grid-cols-2">
         <section class="rounded-lg border border-border/50 bg-background/70 p-3 min-w-0">
           <h5 class="text-xs font-semibold mb-3">
-            {{ legacyT('硬件与资源') }}
+            {{ t('ui.hardwareAndResources') }}
           </h5>
           <div class="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-2">
             <div
@@ -159,19 +159,19 @@
               class="min-w-0"
             >
               <div class="text-[11px] text-muted-foreground truncate">
-                {{ legacyT(item.label) }}
+                {{ item.label }}
               </div>
               <div
                 class="text-xs font-medium tabular-nums truncate mt-0.5"
                 :class="item.tone"
               >
-                {{ legacyT(item.value) }}
+                {{ item.value }}
               </div>
               <div
                 v-if="item.hint"
                 class="text-[10px] text-muted-foreground truncate mt-0.5"
               >
-                {{ legacyT(item.hint) }}
+                {{ item.hint }}
               </div>
             </div>
           </div>
@@ -179,7 +179,7 @@
 
         <section class="rounded-lg border border-border/50 bg-background/70 p-3 min-w-0">
           <h5 class="text-xs font-semibold mb-3">
-            {{ legacyT('实时快照') }}
+            {{ t('ui.realtimeSnapshot') }}
           </h5>
           <div class="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-2">
             <div
@@ -188,10 +188,10 @@
               class="min-w-0"
             >
               <div class="text-[11px] text-muted-foreground truncate">
-                {{ legacyT(item.label) }}
+                {{ item.label }}
               </div>
               <div class="text-xs font-medium tabular-nums truncate mt-0.5">
-                {{ legacyT(item.value) }}
+                {{ item.value }}
               </div>
             </div>
           </div>
@@ -199,7 +199,7 @@
 
         <section class="rounded-lg border border-border/50 bg-background/70 p-3 min-w-0">
           <h5 class="text-xs font-semibold mb-3">
-            {{ legacyT('隧道计数器') }}
+            {{ t('ui.tunnelCounters') }}
           </h5>
           <div
             v-if="tunnelMetrics"
@@ -211,10 +211,10 @@
               class="min-w-0"
             >
               <div class="text-[11px] text-muted-foreground truncate">
-                {{ legacyT(item.label) }}
+                {{ item.label }}
               </div>
               <div class="text-xs font-medium tabular-nums truncate mt-0.5">
-                {{ legacyT(item.value) }}
+                {{ item.value }}
               </div>
             </div>
           </div>
@@ -222,7 +222,7 @@
             v-else
             class="rounded-md bg-muted/30 py-4 text-center text-xs text-muted-foreground"
           >
-            {{ legacyT('暂无隧道计数器') }}
+            {{ t('ui.noTunnelCounters') }}
           </div>
         </section>
       </div>
@@ -235,6 +235,7 @@ import { computed } from 'vue'
 import { AlertTriangle, Loader2, RefreshCw } from 'lucide-vue-next'
 import { Badge, Button } from '@/components/ui'
 import { useI18n } from '@/i18n'
+import { formatProxyNodeTime } from './proxy-node-display'
 import { formatCompactNumber, formatByteSize } from '@/utils/format'
 import type {
   ProxyNode,
@@ -261,7 +262,7 @@ defineEmits<{
   refresh: []
 }>()
 
-const { legacyT, locale } = useI18n()
+const { t, locale } = useI18n()
 
 const detailNode = computed(() => props.state?.node ?? props.node)
 const metrics = computed(() => props.state?.metrics ?? null)
@@ -274,11 +275,9 @@ const resourceUsage = computed(() => asRecord(metadata.value?.resource_usage))
 const tunnelMetrics = computed(() => asRecord(metadata.value?.tunnel_metrics))
 
 const loadedText = computed(() => {
-  if (props.state?.loading) return legacyT('正在刷新采样数据')
-  if (!props.state?.loadedAt) return legacyT('展开后自动读取 24 小时指标和最近关键事件')
-  return locale.value === 'en-US'
-    ? `Data refreshed at ${formatLoadedAt(props.state.loadedAt)}`
-    : `数据刷新于 ${formatLoadedAt(props.state.loadedAt)}`
+  if (props.state?.loading) return t('ui.refreshingSampleData')
+  if (!props.state?.loadedAt) return t('ui.expandingLoads24HourMetricsAndRecentKeyEventsAutomatically')
+  return t('feedback.proxy.refreshedAt', { time: formatLoadedAt(props.state.loadedAt) })
 })
 
 const summaryStats = computed(() => {
@@ -286,39 +285,39 @@ const summaryStats = computed(() => {
   const totalBytes = (summary?.ws_in_bytes_delta ?? 0) + (summary?.ws_out_bytes_delta ?? 0)
   return [
     {
-      label: '在线率',
+      label: t('ui.uptime'),
       value: formatPercent(summary?.uptime_ratio ?? null),
-      hint: `${formatNumber(summary?.uptime_samples ?? 0)}/${formatNumber(summary?.samples ?? 0)} 样本`,
+      hint: t('feedback.proxy.samples', { count: formatNumber(summary?.uptime_samples ?? 0), total: formatNumber(summary?.samples ?? 0) }),
       tone: uptimeTone(summary?.uptime_ratio ?? null),
     },
     {
-      label: '心跳 RTT',
+      label: t('ui.heartbeatRtt'),
       value: formatMs(summary?.heartbeat_rtt_ms_avg ?? null),
-      hint: `峰值 ${formatMs(summary?.heartbeat_rtt_ms_max ?? null)}`,
+      hint: t('feedback.proxy.peak', { value: formatMs(summary?.heartbeat_rtt_ms_max ?? null) }),
       tone: '',
     },
     {
-      label: '并发峰值',
+      label: t('ui.peakConcurrency'),
       value: formatNumber(summary?.active_connections_max ?? 0),
-      hint: `均值 ${formatDecimal(summary?.active_connections_avg ?? null)}`,
+      hint: t('feedback.proxy.average', { value: formatDecimal(summary?.active_connections_avg ?? null) }),
       tone: '',
     },
     {
-      label: '断开次数',
+      label: t('ui.disconnects'),
       value: formatNumber(summary?.disconnects_delta ?? 0),
       hint: '24h delta',
       tone: (summary?.disconnects_delta ?? 0) > 0 ? 'text-yellow-600 dark:text-yellow-400' : '',
     },
     {
-      label: '连接错误',
+      label: t('ui.connectionErrors'),
       value: formatNumber(summary?.connect_errors_delta ?? 0),
       hint: '24h delta',
       tone: (summary?.connect_errors_delta ?? 0) > 0 ? 'text-destructive' : '',
     },
     {
-      label: 'WS 流量',
+      label: t('ui.wsTraffic'),
       value: formatByteSize(totalBytes),
-      hint: `${formatNumber((summary?.ws_in_frames_delta ?? 0) + (summary?.ws_out_frames_delta ?? 0))} 帧`,
+      hint: t('feedback.proxy.frames', { count: formatNumber((summary?.ws_in_frames_delta ?? 0) + (summary?.ws_out_frames_delta ?? 0)) }),
       tone: '',
     },
   ]
@@ -327,15 +326,15 @@ const summaryStats = computed(() => {
 const snapshotItems = computed(() => {
   const node = detailNode.value
   return [
-    { label: '当前并发', value: formatNumber(node.active_connections ?? 0) },
-    { label: '心跳间隔', value: `${node.heartbeat_interval ?? '-'}s` },
-    { label: '最后心跳', value: formatTime(node.last_heartbeat_at) },
-    { label: '隧道连接', value: node.tunnel_connected ? '已连接' : '未连接' },
-    { label: '连接时间', value: formatTime(node.tunnel_connected_at) },
-    { label: '容量估算', value: node.estimated_max_concurrency == null ? '-' : formatNumber(node.estimated_max_concurrency) },
-    { label: '配置版本', value: `v${node.config_version}` },
-    { label: '注册来源', value: node.registered_by || '-' },
-    { label: '代理版本', value: stringField(metadata.value, 'version') || '-' },
+    { label: t('ui.currentConcurrency'), value: formatNumber(node.active_connections ?? 0) },
+    { label: t('ui.heartbeatInterval'), value: `${node.heartbeat_interval ?? '-'}s` },
+    { label: t('ui.lastHeartbeat'), value: formatTime(node.last_heartbeat_at) },
+    { label: t('ui.tunnelConnection'), value: node.tunnel_connected ? t('ui.connected5be0323') : t('ui.notConnected3d52574') },
+    { label: t('ui.connectedAt'), value: formatTime(node.tunnel_connected_at) },
+    { label: t('ui.capacityEstimate'), value: node.estimated_max_concurrency == null ? '-' : formatNumber(node.estimated_max_concurrency) },
+    { label: t('ui.configVersionfeb7d97'), value: `v${node.config_version}` },
+    { label: t('ui.registeredBy'), value: node.registered_by || '-' },
+    { label: t('ui.proxyVersion'), value: stringField(metadata.value, 'version') || '-' },
   ]
 })
 
@@ -355,13 +354,13 @@ const resourceItems = computed(() => {
   const cpuCores = numberField(hardware, 'cpu_cores')
   return [
     {
-      label: '系统 CPU',
+      label: t('ui.systemCpu'),
       value: formatUsagePercent(systemCpu),
-      hint: '主机整体',
+      hint: t('ui.hostOverall'),
       tone: usageTone(systemCpu, 70, 90),
     },
     {
-      label: '系统内存',
+      label: t('ui.systemMemory'),
       value: formatUsagePercent(memoryUsedPercent),
       hint: memoryUsedBytes == null || memoryTotalBytes == null
         ? ''
@@ -371,67 +370,67 @@ const resourceItems = computed(() => {
     {
       label: 'Proxy CPU',
       value: formatUsagePercent(processCpu),
-      hint: '当前进程',
+      hint: t('ui.currentProcess'),
       tone: usageTone(processCpu, 70, 90),
     },
     {
-      label: 'Proxy 内存',
+      label: t('ui.proxyMemory'),
       value: processMemoryBytes == null ? '-' : formatByteSize(processMemoryBytes),
       hint: processMemoryPercent == null ? '' : formatUsagePercent(processMemoryPercent),
       tone: usageTone(processMemoryPercent, 5, 15),
     },
     {
-      label: '负载',
+      label: t('ui.load'),
       value: formatLoadAverage(load1, load5, load15),
-      hint: cpuCores == null ? '1/5/15m' : `${formatNumber(cpuCores)} 核`,
+      hint: cpuCores == null ? '1/5/15m' : t('feedback.proxy.cores', { count: formatNumber(cpuCores) }),
       tone: loadTone(load1, cpuCores),
     },
     {
-      label: '运行时间',
+      label: t('ui.uptime5986e9d'),
       value: formatDurationSeconds(numberField(resource, 'process_uptime_secs')),
-      hint: 'proxy 进程',
+      hint: t('ui.proxyProcess'),
       tone: '',
     },
     {
-      label: 'CPU 核心',
+      label: t('ui.cpuCores'),
       value: cpuCores == null ? '-' : formatNumber(cpuCores),
       hint: stringField(hardware, 'os_info') || '',
       tone: '',
     },
     {
-      label: '物理内存',
+      label: t('ui.physicalMemory'),
       value: memoryTotalBytes == null ? '-' : formatByteSize(memoryTotalBytes),
-      hint: '启动采集',
+      hint: t('ui.collectedAtStartup'),
       tone: '',
     },
     {
-      label: 'FD 限制',
+      label: t('ui.fdLimit'),
       value: formatOptionalNumber(numberField(hardware, 'fd_limit')),
       hint: detailNode.value.estimated_max_concurrency == null
         ? ''
-        : `容量 ${formatNumber(detailNode.value.estimated_max_concurrency)}`,
+        : t('feedback.proxy.capacity', { value: formatNumber(detailNode.value.estimated_max_concurrency) }),
       tone: '',
     },
   ]
 })
 
 const tunnelCounterItems = computed(() => [
-  { label: '建连尝试', value: formatTunnelNumber('connect_attempts') },
-  { label: '建连成功', value: formatTunnelNumber('connect_successes') },
-  { label: '建连错误', value: formatTunnelNumber('connect_errors') },
-  { label: '断开次数', value: formatTunnelNumber('disconnects') },
-  { label: '最近连上', value: formatUnixSecs(numberField(tunnelMetrics.value, 'last_connected_at_unix_secs')) },
-  { label: '最近断开', value: formatUnixSecs(numberField(tunnelMetrics.value, 'last_disconnected_at_unix_secs')) },
-  { label: '最近在线', value: formatDurationMs(numberField(tunnelMetrics.value, 'last_connected_duration_ms')) },
-  { label: '累计在线', value: formatDurationMs(numberField(tunnelMetrics.value, 'connected_duration_total_ms')) },
-  { label: '心跳发送', value: formatTunnelNumber('heartbeat_sent') },
-  { label: '心跳确认', value: formatTunnelNumber('heartbeat_ack') },
-  { label: '最近 RTT', value: formatMs(numberField(tunnelMetrics.value, 'heartbeat_rtt_last_ms')) },
-  { label: '平均 RTT', value: formatMs(numberField(tunnelMetrics.value, 'heartbeat_rtt_avg_ms')) },
-  { label: 'WS 入站', value: formatByteSize(numberField(tunnelMetrics.value, 'ws_in_bytes') ?? 0) },
-  { label: 'WS 出站', value: formatByteSize(numberField(tunnelMetrics.value, 'ws_out_bytes') ?? 0) },
-  { label: '入站帧', value: formatTunnelNumber('ws_in_frames') },
-  { label: '出站帧', value: formatTunnelNumber('ws_out_frames') },
+  { label: t('ui.connectAttempts'), value: formatTunnelNumber('connect_attempts') },
+  { label: t('ui.connectSuccesses'), value: formatTunnelNumber('connect_successes') },
+  { label: t('ui.connectErrors'), value: formatTunnelNumber('connect_errors') },
+  { label: t('ui.disconnects'), value: formatTunnelNumber('disconnects') },
+  { label: t('ui.lastConnected'), value: formatUnixSecs(numberField(tunnelMetrics.value, 'last_connected_at_unix_secs')) },
+  { label: t('ui.lastDisconnected'), value: formatUnixSecs(numberField(tunnelMetrics.value, 'last_disconnected_at_unix_secs')) },
+  { label: t('ui.lastOnlineDuration'), value: formatDurationMs(numberField(tunnelMetrics.value, 'last_connected_duration_ms')) },
+  { label: t('ui.totalOnlineDuration'), value: formatDurationMs(numberField(tunnelMetrics.value, 'connected_duration_total_ms')) },
+  { label: t('ui.heartbeatSent'), value: formatTunnelNumber('heartbeat_sent') },
+  { label: t('ui.heartbeatAck'), value: formatTunnelNumber('heartbeat_ack') },
+  { label: t('ui.latestRtt'), value: formatMs(numberField(tunnelMetrics.value, 'heartbeat_rtt_last_ms')) },
+  { label: t('ui.averageRtt'), value: formatMs(numberField(tunnelMetrics.value, 'heartbeat_rtt_avg_ms')) },
+  { label: t('ui.wsInbound'), value: formatByteSize(numberField(tunnelMetrics.value, 'ws_in_bytes') ?? 0) },
+  { label: t('ui.wsOutbound'), value: formatByteSize(numberField(tunnelMetrics.value, 'ws_out_bytes') ?? 0) },
+  { label: t('ui.inboundFrames'), value: formatTunnelNumber('ws_in_frames') },
+  { label: t('ui.outboundFrames'), value: formatTunnelNumber('ws_out_frames') },
 ])
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -549,20 +548,7 @@ function loadTone(load: number | null, cpuCores: number | null) {
 }
 
 function formatTime(iso: string | null) {
-  if (!iso) return '-'
-  const date = new Date(iso)
-  if (Number.isNaN(date.getTime())) return '-'
-  const diff = (Date.now() - date.getTime()) / 1000
-  if (locale.value === 'en-US') {
-    if (diff >= 0 && diff < 60) return 'Just now'
-    if (diff >= 0 && diff < 3600) return `${Math.floor(diff / 60)}m ago`
-    if (diff >= 0 && diff < 86400) return `${Math.floor(diff / 3600)}h ago`
-    return date.toLocaleDateString(locale.value, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
-  }
-  if (diff >= 0 && diff < 60) return '刚刚'
-  if (diff >= 0 && diff < 3600) return `${Math.floor(diff / 60)}分钟前`
-  if (diff >= 0 && diff < 86400) return `${Math.floor(diff / 3600)}小时前`
-  return date.toLocaleDateString(locale.value, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+  return formatProxyNodeTime(iso, locale.value)
 }
 
 function formatLoadedAt(value: number) {
@@ -592,10 +578,10 @@ function bucketBarColor(bucket: ProxyNodeMetricsBucket) {
 function bucketTitle(bucket: ProxyNodeMetricsBucket) {
   const parts = [
     formatBucketTime(bucket.bucket_start),
-    `${legacyT('在线率')} ${formatPercent(bucket.uptime_ratio)}`,
+    `${t('ui.uptime')} ${formatPercent(bucket.uptime_ratio)}`,
     `RTT ${formatMs(bucket.heartbeat_rtt_ms_avg)}`,
-    `${legacyT('断开')} ${formatNumber(bucket.disconnects_delta)}`,
-    `${legacyT('错误')} ${formatNumber(bucket.connect_errors_delta + bucket.error_events_delta)}`,
+    `${t('ui.disconnected')} ${formatNumber(bucket.disconnects_delta)}`,
+    `${t('ui.error')} ${formatNumber(bucket.connect_errors_delta + bucket.error_events_delta)}`,
   ]
   return parts.join(locale.value === 'en-US' ? ', ' : '，')
 }
@@ -616,10 +602,10 @@ function uptimeTone(value: number | null) {
 
 function eventTypeLabel(type: string) {
   switch (type) {
-    case 'connected': return '连接'
-    case 'disconnected': return '断开'
-    case 'error': return '错误'
-    case 'tunnel_err': return '隧道错误'
+    case 'connected': return t('ui.connected')
+    case 'disconnected': return t('ui.disconnected')
+    case 'error': return t('ui.error')
+    case 'tunnel_err': return t('ui.tunnelError')
     default: return type
   }
 }
@@ -652,7 +638,7 @@ function eventTooltip(event: ProxyNodeEvent) {
   const parts = [eventDetail(event)]
   const category = stringField(metadata, 'category')
   const action = (category ? tunnelErrorAction(category) : '') || stringField(metadata, 'operator_action')
-  if (action) parts.push(`建议：${action}`)
+  if (action) parts.push(t('feedback.proxy.suggestion', { action }))
   const component = stringField(metadata, 'component')
   const severity = stringField(metadata, 'severity')
   if (component || severity) parts.push([component, severity].filter(Boolean).join(' / '))
@@ -661,38 +647,38 @@ function eventTooltip(event: ProxyNodeEvent) {
 
 function tunnelErrorSummary(category: string) {
   switch (category) {
-    case 'stale_timeout': return '超时未收到隧道入站帧'
-    case 'ws_write_error': return 'WebSocket 写入失败，对端重置或关闭'
-    case 'ws_ping_error': return 'WebSocket 保活 Ping 发送失败'
-    case 'ws_read_error': return 'WebSocket 读取失败'
-    case 'tunnel_connect_error': return '隧道建连失败'
-    case 'frame_decode_error': return '隧道帧解析失败'
-    case 'stream_dispatch_timeout': return '请求流分发超时'
-    case 'heartbeat_ack_empty': return '心跳确认为空'
-    case 'heartbeat_ack_parse': return '心跳确认解析失败'
-    case 'writer_task_panic': return '隧道写任务异常退出'
-    case 'writer_task_cancelled': return '隧道写任务被取消'
-    case 'dispatcher_error': return '隧道分发器错误'
+    case 'stale_timeout': return t('ui.timedOutWaitingForInboundTunnelFrames')
+    case 'ws_write_error': return t('ui.websocketWriteFailedPeerResetOrClosedTheConnection')
+    case 'ws_ping_error': return t('ui.websocketKeepalivePingFailed')
+    case 'ws_read_error': return t('ui.websocketReadFailed')
+    case 'tunnel_connect_error': return t('ui.tunnelConnectionFailed')
+    case 'frame_decode_error': return t('ui.tunnelFrameDecodingFailed')
+    case 'stream_dispatch_timeout': return t('ui.requestStreamDispatchTimedOut')
+    case 'heartbeat_ack_empty': return t('ui.heartbeatAcknowledgementWasEmpty')
+    case 'heartbeat_ack_parse': return t('ui.failedToParseHeartbeatAcknowledgement')
+    case 'writer_task_panic': return t('ui.tunnelWriterTaskExitedUnexpectedly')
+    case 'writer_task_cancelled': return t('ui.tunnelWriterTaskWasCancelled')
+    case 'dispatcher_error': return t('ui.tunnelDispatcherError')
     default: return ''
   }
 }
 
 function tunnelErrorAction(category: string) {
   switch (category) {
-    case 'stale_timeout': return '检查 gateway/反向代理 idle timeout、跨境链路抖动和 ping/pong 是否可达；网络抖动大时可调高 stale timeout。'
-    case 'ws_write_error': return '检查 gateway 是否重启、负载均衡/NAT/防火墙是否重置长连接，并确认 proxy 是否已自动重连。'
-    case 'ws_ping_error': return '检查中间代理是否清理空闲 WebSocket，或对端是否提前关闭连接。'
-    case 'ws_read_error': return '对照同一时间的 gateway 日志和网络监控，确认是否存在链路中断。'
-    case 'tunnel_connect_error': return '检查 Aether 地址、DNS、TLS、管理 token，以及 AETHER_TUNNEL_AETHER_OUTBOUND_PROXY_URL 配置。'
-    case 'frame_decode_error': return '检查 proxy/gateway 版本兼容性，确认中间层没有改写 WebSocket 二进制帧。'
-    case 'stream_dispatch_timeout': return '检查 proxy CPU/内存、并发上限和上游 provider 慢请求。'
+    case 'stale_timeout': return t('ui.checkGatewayReverseProxyIdleTimeoutCrossRegionNetworkJitter')
+    case 'ws_write_error': return t('ui.checkWhetherTheGatewayRestartedLoadBalancerNatFirewallReset')
+    case 'ws_ping_error': return t('ui.checkWhetherAnIntermediateProxyClearsIdleWebsocketsOrThe')
+    case 'ws_read_error': return t('ui.compareGatewayLogsAndNetworkMonitoringAtTheSameTime')
+    case 'tunnel_connect_error': return t('ui.checkTheAetherUrlDnsTlsManagementTokenAndAether')
+    case 'frame_decode_error': return t('ui.checkProxyGatewayVersionCompatibilityAndConfirmNoIntermediateLayer')
+    case 'stream_dispatch_timeout': return t('ui.checkProxyCpuMemoryConcurrencyLimitsAndSlowUpstreamProvider')
     case 'heartbeat_ack_empty':
     case 'heartbeat_ack_parse':
-      return '检查 gateway 心跳处理日志和 proxy/gateway 版本兼容性。'
+      return t('ui.checkGatewayHeartbeatHandlingLogsAndProxyGatewayVersionCompatibility')
     case 'writer_task_panic':
     case 'writer_task_cancelled':
-      return '查看此前一条写入或 ping 错误，确认隧道重连循环仍在运行。'
-    case 'dispatcher_error': return '检查同一时间的请求流和 gateway tunnel 日志。'
+      return t('ui.reviewThePreviousWriteOrPingErrorAndConfirmThe')
+    case 'dispatcher_error': return t('ui.checkRequestStreamLogsAndGatewayTunnelLogsFromThe')
     default: return ''
   }
 }

@@ -6,7 +6,7 @@
           <button
             type="button"
             class="inline-flex h-5 w-5 items-center justify-center rounded-md text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 shrink-0"
-            :title="expanded ? legacyT('收起数据') : legacyT('展开数据')"
+            :title="expanded ? t('ui.collapseData') : t('ui.expandData')"
             @click="$emit('toggle-details')"
           >
             <ChevronDown
@@ -24,7 +24,7 @@
             variant="outline"
             class="text-[10px] px-1.5 py-0"
           >
-            {{ legacyT('手动') }}
+            {{ t('ui.manual') }}
           </Badge>
           <Badge
             v-if="node.tunnel_mode"
@@ -38,7 +38,7 @@
             :variant="schedulingBadge.variant"
             class="text-[10px] px-1.5 py-0"
           >
-            {{ legacyT(schedulingBadge.label) }}
+            {{ schedulingBadge.label }}
           </Badge>
           <HardwareTooltip :node="node" />
         </div>
@@ -47,36 +47,36 @@
           v-if="!node.is_manual"
           class="text-[11px] text-muted-foreground mt-1"
         >
-          {{ legacyT('版本:') }} {{ proxyNodeVersion(node) }}
+          {{ t('ui.version5c21dcf') }} {{ proxyNodeVersion(node) }}
         </div>
       </div>
       <Badge
         :variant="proxyNodeStatusVariant(node.status)"
-        :title="legacyT(proxyNodeStatusTitle(node))"
+        :title="proxyNodeStatusTitle(node)"
         class="text-xs"
       >
-        {{ legacyT(proxyNodeStatusLabel(node)) }}
+        {{ proxyNodeStatusLabel(node) }}
       </Badge>
     </div>
 
     <div class="grid grid-cols-4 gap-2 text-xs text-muted-foreground mb-3">
       <div>
-        <span class="block text-foreground/60">{{ legacyT('区域') }}</span>
-        <span>{{ legacyT(formatProxyNodeRegion(node.region)) }}</span>
+        <span class="block text-foreground/60">{{ t('ui.region') }}</span>
+        <span>{{ formatProxyNodeRegion(node.region) }}</span>
       </div>
       <div>
-        <span class="block text-foreground/60">{{ legacyT('总请求') }}</span>
+        <span class="block text-foreground/60">{{ t('ui.totalRequests') }}</span>
         <span class="tabular-nums">{{ formatProxyNodeNumber(node.total_requests) }}</span>
       </div>
       <div>
-        <span class="block text-foreground/60">{{ legacyT('失败率') }}</span>
+        <span class="block text-foreground/60">{{ t('ui.failureRate') }}</span>
         <span
           class="tabular-nums"
           :class="proxyNodeFailureRate(node) > 5 ? 'text-destructive font-medium' : ''"
         >{{ formatProxyNodeFailureRate(node) }}</span>
       </div>
       <div>
-        <span class="block text-foreground/60">{{ legacyT('延迟') }}</span>
+        <span class="block text-foreground/60">{{ t('ui.latency') }}</span>
         <span class="tabular-nums">{{ node.avg_latency_ms != null ? `${node.avg_latency_ms.toFixed(0)}ms` : '-' }}</span>
       </div>
     </div>
@@ -99,7 +99,7 @@
             v-else
             class="h-3 w-3 mr-1"
           />
-          {{ testing ? legacyT('测试中') : legacyT('测试') }}
+          {{ testing ? t('ui.testing') : t('ui.test') }}
         </Button>
         <Button
           v-if="node.is_manual"
@@ -109,7 +109,7 @@
           @click="$emit('edit')"
         >
           <SquarePen class="h-3 w-3 mr-1" />
-          {{ legacyT('编辑') }}
+          {{ t('ui.edit0518365') }}
         </Button>
         <Button
           v-if="!node.is_manual"
@@ -119,7 +119,7 @@
           @click="$emit('config')"
         >
           <Settings class="h-3 w-3 mr-1" />
-          {{ legacyT('配置') }}
+          {{ t('common.configure') }}
         </Button>
         <Button
           variant="ghost"
@@ -128,7 +128,7 @@
           @click="$emit('delete')"
         >
           <Trash2 class="h-3 w-3 mr-1" />
-          {{ legacyT('删除') }}
+          {{ t('ui.delete') }}
         </Button>
       </div>
     </div>
@@ -185,6 +185,6 @@ defineEmits<{
   delete: []
 }>()
 
-const { legacyT, locale } = useI18n()
+const { t, locale } = useI18n()
 const schedulingBadge = computed(() => proxyNodeSchedulingBadge(props.node))
 </script>

@@ -1,6 +1,6 @@
 <template>
   <TableCard
-    title="使用记录"
+    :title="t('nav.usageRecords')"
     class="relative"
   >
     <template #actions>
@@ -21,7 +21,7 @@
           <Input
             id="usage-records-search"
             v-model="localSearch"
-            :placeholder="isAdmin ? '搜索用户/密钥' : '搜索密钥/模型'"
+            :placeholder="isAdmin ? t('ui.searchUsersKeys') : t('ui.searchKeysModels')"
             class="h-8 w-full text-xs border-border/60 pl-8"
           />
         </div>
@@ -33,8 +33,8 @@
         data-usage-hide-unknown-toggle="mobile"
         class="absolute right-12 top-2.5 h-8 w-8 shrink-0 md:hidden"
         :class="hideUnknownRecords ? 'text-primary' : ''"
-        :title="hideUnknownRecords ? '显示 unknown 请求' : '隐藏 unknown 请求'"
-        aria-label="隐藏 unknown 模型或提供商的请求"
+        :title="hideUnknownRecords ? t('ui.showUnknownRequests') : t('ui.hideUnknownRequests')"
+        :aria-label="t('ui.hideRequestsWithUnknownModelsOrProviders')"
         :aria-pressed="hideUnknownRecords"
         @click="$emit('update:hideUnknownRecords', !hideUnknownRecords)"
       >
@@ -45,7 +45,7 @@
         size="icon"
         class="absolute right-4 top-2.5 h-8 w-8 shrink-0 md:hidden"
         :class="autoRefresh ? 'text-primary' : ''"
-        :title="autoRefresh ? '点击关闭自动刷新' : '点击开启自动刷新'"
+        :title="autoRefresh ? t('ui.disableAutomaticRefresh') : t('ui.enableAutomaticRefresh')"
         @click="$emit('update:autoRefresh', !autoRefresh)"
       >
         <RefreshCcw
@@ -79,11 +79,11 @@
           @update:model-value="$emit('update:filterModel', $event)"
         >
           <SelectTrigger class="h-8 w-full min-w-0 text-xs border-border/60">
-            <SelectValue placeholder="模型" />
+            <SelectValue :placeholder="t('ui.model')" />
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="__all__">
-              全部模型
+              {{ t('ui.allModels') }}
             </SelectItem>
             <SelectItem
               v-for="model in availableModels"
@@ -102,11 +102,11 @@
           @update:model-value="$emit('update:filterProvider', $event)"
         >
           <SelectTrigger class="h-8 w-full min-w-0 text-xs border-border/60">
-            <SelectValue placeholder="提供商" />
+            <SelectValue :placeholder="t('nav.providers')" />
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="__all__">
-              全部提供商
+              {{ t('ui.allProviders') }}
             </SelectItem>
             <SelectItem
               v-for="provider in availableProviders"
@@ -124,11 +124,11 @@
           @update:model-value="$emit('update:filterApiFormat', $event)"
         >
           <SelectTrigger class="h-8 w-full min-w-0 text-xs border-border/60">
-            <SelectValue placeholder="格式" />
+            <SelectValue :placeholder="t('ui.format')" />
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="__all__">
-              全部格式
+              {{ t('ui.allFormats') }}
             </SelectItem>
             <SelectItem
               v-for="format in availableApiFormats"
@@ -146,7 +146,7 @@
           @update:model-value="$emit('update:filterStatus', $event)"
         >
           <SelectTrigger class="h-8 w-full min-w-0 text-xs border-border/60">
-            <SelectValue placeholder="状态" />
+            <SelectValue :placeholder="t('ui.status6320b4a')" />
           </SelectTrigger>
           <SelectContent>
             <!-- 手机与桌面共用状态选项，避免新增筛选时漏掉手机入口。 -->
@@ -170,7 +170,7 @@
         v-model="visibleColumnIds"
         class="hidden md:block"
         :options="columnSelectOptions"
-        placeholder="显示列"
+        :placeholder="t('ui.visibleColumns')"
         trigger-class="w-40 h-8 text-xs border-border/60"
         dropdown-min-width="14rem"
         :searchable="false"
@@ -186,8 +186,8 @@
         data-usage-hide-unknown-toggle="desktop"
         class="hidden h-8 w-8 shrink-0 md:inline-flex"
         :class="hideUnknownRecords ? 'text-primary' : ''"
-        :title="hideUnknownRecords ? '显示 unknown 请求' : '隐藏 unknown 请求'"
-        aria-label="隐藏 unknown 模型或提供商的请求"
+        :title="hideUnknownRecords ? t('ui.showUnknownRequests') : t('ui.hideUnknownRequests')"
+        :aria-label="t('ui.hideRequestsWithUnknownModelsOrProviders')"
         :aria-pressed="hideUnknownRecords"
         @click="$emit('update:hideUnknownRecords', !hideUnknownRecords)"
       >
@@ -198,7 +198,7 @@
         size="icon"
         class="hidden h-8 w-8 shrink-0 md:inline-flex"
         :class="autoRefresh ? 'text-primary' : ''"
-        :title="autoRefresh ? '点击关闭自动刷新' : '点击开启自动刷新'"
+        :title="autoRefresh ? t('ui.disableAutomaticRefresh') : t('ui.enableAutomaticRefresh')"
         @click="$emit('update:autoRefresh', !autoRefresh)"
       >
         <RefreshCcw
@@ -214,7 +214,7 @@
         v-if="records.length === 0"
         class="text-center py-12 text-muted-foreground"
       >
-        暂无请求记录
+        {{ t('ui.noRequestRecords') }}
       </div>
       <UsageRecordMobileCard
         v-for="record in records"
@@ -334,7 +334,7 @@
             v-if="isColumnVisible('time')"
             class="h-12 font-semibold w-[8%]"
           >
-            时间
+            {{ t('ui.time') }}
           </TableHead>
           <SortableTableHead
             v-if="isAdmin && isColumnVisible('user')"
@@ -342,11 +342,10 @@
             column-key="user"
             :sortable="false"
             :filter-active="filterUser !== '__all__'"
-            filter-title="筛选用户"
+            :filter-title="t('ui.filterUser')"
             filter-content-class="w-64 p-1 rounded-2xl border-border bg-card text-foreground shadow-2xl backdrop-blur-xl"
           >
-            用户
-            <template #filter="{ close }">
+            {{ t('auth.role.user') }} <template #filter="{ close }">
               <ServerUserSelector
                 :model-value="filterUser"
                 :initial-users="availableUsers"
@@ -359,7 +358,7 @@
             v-if="!isAdmin && isColumnVisible('key')"
             class="h-12 font-semibold w-[17%]"
           >
-            密钥
+            {{ t('ui.key') }}
           </TableHead>
           <SortableTableHead
             v-if="isColumnVisible('model')"
@@ -368,11 +367,10 @@
             column-key="model"
             :sortable="false"
             :filter-active="filterModel !== '__all__'"
-            filter-title="筛选模型"
+            :filter-title="t('ui.filterModels')"
             filter-content-class="w-64 p-1 rounded-2xl border-border bg-card text-foreground shadow-2xl backdrop-blur-xl"
           >
-            模型
-            <template #filter="{ close }">
+            {{ t('ui.model') }} <template #filter="{ close }">
               <TableFilterMenu
                 :model-value="filterModel"
                 :options="modelFilterOptions"
@@ -387,11 +385,10 @@
             column-key="provider"
             :sortable="false"
             :filter-active="filterProvider !== '__all__'"
-            filter-title="筛选提供商"
+            :filter-title="t('ui.filterProvider')"
             filter-content-class="w-48 p-1 rounded-2xl border-border bg-card text-foreground shadow-2xl backdrop-blur-xl"
           >
-            提供商
-            <template #filter="{ close }">
+            {{ t('nav.providers') }} <template #filter="{ close }">
               <TableFilterMenu
                 :model-value="filterProvider"
                 :options="providerFilterOptions"
@@ -407,11 +404,10 @@
             column-key="api_format"
             :sortable="false"
             :filter-active="filterApiFormat !== '__all__'"
-            filter-title="筛选 API 格式"
+            :filter-title="t('ui.filterApiFormat')"
             filter-content-class="w-72 p-1 rounded-2xl border-border bg-card text-foreground shadow-2xl backdrop-blur-xl"
           >
-            API格式
-            <template #filter="{ close }">
+            {{ t('ui.apiFormat55eba68') }} <template #filter="{ close }">
               <TableFilterMenu
                 :model-value="filterApiFormat"
                 :options="apiFormatFilterOptions"
@@ -427,11 +423,10 @@
             :sortable="false"
             align="center"
             :filter-active="filterStatus !== '__all__'"
-            filter-title="筛选类型"
+            :filter-title="t('ui.filterType')"
             filter-content-class="w-44 p-1 rounded-2xl border-border bg-card text-foreground shadow-2xl backdrop-blur-xl"
           >
-            类型
-            <template #filter="{ close }">
+            {{ t('ui.typeba40014') }} <template #filter="{ close }">
               <TableFilterMenu
                 :model-value="filterStatus"
                 :options="statusFilterOptions"
@@ -450,16 +445,16 @@
             v-if="isColumnVisible('cost')"
             class="h-12 font-semibold w-[6%] text-right"
           >
-            费用
+            {{ t('ui.cost7fe8603') }}
           </TableHead>
           <TableHead
             v-if="isColumnVisible('performance')"
             class="h-12 font-semibold w-[9%] text-right"
           >
             <div class="flex flex-col items-end text-[11px] leading-3">
-              <span class="whitespace-nowrap">端到端</span>
-              <span class="whitespace-nowrap">首字/总耗时</span>
-              <span class="text-muted-foreground font-normal">输出速度</span>
+              <span class="whitespace-nowrap">{{ t('ui.endToEnd') }}</span>
+              <span class="whitespace-nowrap">{{ t('ui.firstTokenTotalTime') }}</span>
+              <span class="text-muted-foreground font-normal">{{ t('ui.outputSpeed') }}</span>
             </div>
           </TableHead>
           <SortableTableHead
@@ -468,11 +463,10 @@
             column-key="client_family"
             :sortable="false"
             :filter-active="filterClientFamily !== '__all__'"
-            filter-title="筛选客户端"
+            :filter-title="t('ui.filterClients')"
             filter-content-class="w-44 p-1 rounded-2xl border-border bg-card text-foreground shadow-2xl backdrop-blur-xl"
           >
-            客户端
-            <template #filter="{ close }">
+            {{ t('ui.client') }} <template #filter="{ close }">
               <TableFilterMenu
                 :model-value="filterClientFamily"
                 :options="clientFamilyFilterOptions"
@@ -485,7 +479,7 @@
             v-if="isColumnVisible('client_ip')"
             class="h-12 font-semibold w-[10%]"
           >
-            IP 地址
+            {{ t('ui.ipAddress') }}
           </TableHead>
           <TableHead
             v-if="isColumnVisible('user_agent')"
@@ -501,7 +495,7 @@
             :colspan="visibleColumnCount"
             class="text-center py-12 text-muted-foreground"
           >
-            暂无请求记录
+            {{ t('ui.noRequestRecords') }}
           </TableCell>
         </TableRow>
         <TableRow
@@ -528,11 +522,11 @@
           <TableCell
             v-if="isAdmin && isColumnVisible('user')"
             class="py-4 w-[12%] truncate"
-            :title="record.username || record.user_email || (record.user_id ? `User ${record.user_id}` : '已删除用户')"
+            :title="record.username || record.user_email || (record.user_id ? `User ${record.user_id}` : t('ui.deletedUser'))"
           >
             <div class="flex flex-col text-xs gap-0.5">
               <span class="truncate">
-                {{ record.username || record.user_email || (record.user_id ? `User ${record.user_id}` : '已删除用户') }}
+                {{ record.username || record.user_email || (record.user_id ? `User ${record.user_id}` : t('ui.deletedUser')) }}
               </span>
               <span
                 v-if="record.api_key?.name"
@@ -574,8 +568,8 @@
                 v-if="record.chat_pii_redaction"
                 data-usage-attempt-marker="pii-redaction"
                 class="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-400"
-                title="此请求触发了敏感信息保护：发送给上游的内容已替换为占位符"
-                aria-label="触发敏感信息保护"
+                :title="t('ui.thisRequestTriggeredSensitiveInformationProtectionTheContentSentUpstream')"
+                :aria-label="t('ui.sensitiveInformationProtectionTriggered')"
               />
             </div>
           </TableCell>
@@ -592,8 +586,8 @@
                 v-if="record.has_fallback"
                 data-usage-attempt-marker="fallback"
                 class="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 flex-shrink-0"
-                title="此请求发生了 Provider 故障转移"
-                aria-label="发生 Provider 故障转移"
+                :title="t('ui.thisRequestFailedOverToAnotherProvider')"
+                :aria-label="t('ui.providerFailover')"
               />
               <!--
                 被跳过的更高优先级候选：与"故障转移"区分开。
@@ -611,8 +605,8 @@
                 v-if="record.has_retry"
                 data-usage-attempt-marker="retry"
                 class="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 flex-shrink-0"
-                title="此请求发生了重试"
-                aria-label="发生重试"
+                :title="t('ui.thisRequestWasRetried')"
+                :aria-label="t('ui.retried')"
               />
             </div>
           </TableCell>
@@ -664,28 +658,28 @@
               variant="destructive"
               class="whitespace-nowrap"
             >
-              失败
+              {{ t('ui.failed28384d7') }}
             </Badge>
             <Badge
               v-else-if="getDisplayStatus(record) === 'pending'"
               variant="outline"
               class="whitespace-nowrap animate-pulse border-muted-foreground/30 text-muted-foreground"
             >
-              等待中
+              {{ t('ui.waiting') }}
             </Badge>
             <Badge
               v-else-if="getDisplayStatus(record) === 'streaming'"
               variant="outline"
               class="whitespace-nowrap animate-pulse border-primary/50 text-primary"
             >
-              传输中
+              {{ t('ui.transferring') }}
             </Badge>
             <Badge
               v-else-if="record.status === 'cancelled'"
               variant="outline"
               class="whitespace-nowrap border-amber-500/50 text-amber-600 dark:text-amber-400"
             >
-              已取消
+              {{ t('ui.canceled') }}
             </Badge>
             <Badge
               v-else-if="isUsageWebSocket(record)"
@@ -758,16 +752,16 @@
                 v-if="(record.input_audio_tokens || 0) > 0 || (record.output_audio_tokens || 0) > 0"
                 class="mt-0.5 text-right text-[10px] leading-tight tabular-nums text-muted-foreground"
               >
-                音频 {{ formatOptionalTokens(record.input_audio_tokens) }} / {{ formatOptionalTokens(record.output_audio_tokens) }}
+                {{ t('ui.audio296c632') }} {{ formatOptionalTokens(record.input_audio_tokens) }} / {{ formatOptionalTokens(record.output_audio_tokens) }}
               </div>
             </template>
             <div
               v-else
               data-usage-unavailable="tokens"
               class="text-right text-xs text-muted-foreground"
-              title="上游未提供可验证的 token/费用用量"
+              :title="t('ui.theUpstreamDidNotProvideVerifiableTokenOrCostUsage')"
             >
-              不可用
+              {{ t('ui.unavailable460b357') }}
             </div>
           </TableCell>
           <TableCell
@@ -863,6 +857,8 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+
 import { ref, computed, onBeforeUnmount, watch } from 'vue'
 import { useLocalStorage } from '@vueuse/core'
 import {
@@ -1014,19 +1010,21 @@ const emit = defineEmits<{
   'prefetchDetail': [id: string]
 }>()
 
+const { t } = useI18n()
+
 const USAGE_RECORD_COLUMN_OPTIONS: UsageRecordColumnOption[] = [
-  { id: 'time', label: '时间' },
-  { id: 'user', label: '用户', adminOnly: true },
-  { id: 'key', label: '密钥', userOnly: true },
-  { id: 'model', label: '模型' },
-  { id: 'provider', label: '提供商', adminOnly: true },
-  { id: 'api_format', label: 'API格式' },
-  { id: 'status', label: '类型/状态' },
+  { id: 'time', get label() { return t('ui.time') } },
+  { id: 'user', get label() { return t('auth.role.user') }, adminOnly: true },
+  { id: 'key', get label() { return t('ui.key') }, userOnly: true },
+  { id: 'model', get label() { return t('ui.model') } },
+  { id: 'provider', get label() { return t('nav.providers') }, adminOnly: true },
+  { id: 'api_format', get label() { return t('ui.apiFormat55eba68') } },
+  { id: 'status', get label() { return t('ui.typeStatus') } },
   { id: 'tokens', label: 'Tokens' },
-  { id: 'cost', label: '费用' },
-  { id: 'performance', label: '耗时/速度' },
-  { id: 'client_family', label: '客户端类型' },
-  { id: 'client_ip', label: 'IP 地址' },
+  { id: 'cost', get label() { return t('ui.cost7fe8603') } },
+  { id: 'performance', get label() { return t('ui.durationSpeedf3ebf76') } },
+  { id: 'client_family', get label() { return t('ui.clientType') } },
+  { id: 'client_ip', get label() { return t('ui.ipAddress') } },
   { id: 'user_agent', label: 'User-Agent' },
 ]
 
@@ -1131,7 +1129,7 @@ function isColumnVisible(column: UsageRecordColumnId): boolean {
 }
 
 const modelFilterOptions = computed<FilterOption[]>(() => [
-  { value: '__all__', label: '全部模型' },
+  { value: '__all__', get label() { return t('ui.allModels') } },
   ...props.availableModels.map((model) => ({
     value: model,
     label: model.replace('claude-', ''),
@@ -1139,7 +1137,7 @@ const modelFilterOptions = computed<FilterOption[]>(() => [
 ])
 
 const providerFilterOptions = computed<FilterOption[]>(() => [
-  { value: '__all__', label: '全部提供商' },
+  { value: '__all__', get label() { return t('ui.allProviders') } },
   ...props.availableProviders.map((provider) => ({
     value: provider,
     label: provider,
@@ -1153,7 +1151,7 @@ const clientFamilyFilterOptions = computed<FilterOption[]>(() => {
     if (family) families.add(family)
   })
   return [
-    { value: '__all__', label: '全部客户端' },
+    { value: '__all__', get label() { return t('ui.allClients') } },
     ...Array.from(families).sort().map((family) => ({
       value: family,
       label: formatClientFamily(family),
@@ -1162,7 +1160,7 @@ const clientFamilyFilterOptions = computed<FilterOption[]>(() => {
 })
 
 const apiFormatFilterOptions = computed<FilterOption[]>(() => [
-  { value: '__all__', label: '全部格式' },
+  { value: '__all__', get label() { return t('ui.allFormats') } },
   ...availableApiFormats.map((format) => ({
     value: format.value,
     label: format.label,
@@ -1170,15 +1168,15 @@ const apiFormatFilterOptions = computed<FilterOption[]>(() => [
 ])
 
 const statusFilterOptions: FilterOption[] = [
-  { value: '__all__', label: '全部类型' },
-  { value: 'stream', label: 'HTTP 流式' },
-  { value: 'standard', label: 'HTTP 标准' },
+  { value: '__all__', get label() { return t('ui.allTypes') } },
+  { value: 'stream', get label() { return t('ui.httpStreaming') } },
+  { value: 'standard', get label() { return t('ui.httpStandard') } },
   { value: 'websocket', label: 'WebSocket (WS)' },
-  { value: 'active', label: '活跃' },
-  { value: 'failed', label: '失败' },
-  { value: 'cancelled', label: '已取消' },
-  { value: 'has_retry', label: '发生重试' },
-  { value: 'has_fallback', label: '发生转移' },
+  { value: 'active', get label() { return t('ui.activee85e590') } },
+  { value: 'failed', get label() { return t('ui.failed28384d7') } },
+  { value: 'cancelled', get label() { return t('ui.canceled') } },
+  { value: 'has_retry', get label() { return t('ui.retried') } },
+  { value: 'has_fallback', get label() { return t('ui.failedOver') } },
   // 与"发生转移"区分：候选在调度阶段就被排除，请求从未发出（无上游报错）
   { value: 'has_skipped_candidate', label: '有候选被调度跳过' },
 ]

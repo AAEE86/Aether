@@ -1,3 +1,4 @@
+import { translate } from '@/i18n'
 import { normalizeApiFormatAlias } from '@/api/endpoints/types/api-format'
 
 export interface ReasoningApiFormatConfig {
@@ -40,15 +41,15 @@ export const PREFERRED_MODEL_DIRECTIVE_SUFFIX: ModelDirectiveSuffix = 'low'
 export const MODEL_DIRECTIVE_SUFFIX_METADATA: Readonly<
   Record<ModelDirectiveSuffix, { label: string, description: string }>
 > = {
-  none: { label: 'none', description: '不启用推理' },
-  minimal: { label: 'minimal', description: '模型支持时使用最低推理投入' },
-  low: { label: 'low', description: '低推理投入' },
-  medium: { label: 'medium', description: '中等推理投入' },
-  high: { label: 'high', description: '高推理投入' },
-  xhigh: { label: 'xhigh', description: '超高推理投入' },
-  max: { label: 'max', description: '模型支持时使用最大推理投入' },
-  ultra: { label: 'ultra', description: 'Codex Ultra 推理预设，仅支持兼容的 Codex 模型' },
-  fast: { label: 'fast', description: 'Fast 服务层级' },
+  none: { label: 'none', get description() { return translate('ui.disableReasoning') } },
+  minimal: { label: 'minimal', get description() { return translate('ui.useMinimalReasoningEffortWhenSupported') } },
+  low: { label: 'low', get description() { return translate('ui.lowReasoningEffort') } },
+  medium: { label: 'medium', get description() { return translate('ui.mediumReasoningEffort') } },
+  high: { label: 'high', get description() { return translate('ui.highReasoningEffort') } },
+  xhigh: { label: 'xhigh', get description() { return translate('ui.extraHighReasoningEffort') } },
+  max: { label: 'max', get description() { return translate('ui.useMaximumReasoningEffortWhenSupported') } },
+  ultra: { label: 'ultra', get description() { return translate('ui.codexUltraReasoningPresetForCompatibleCodexModels') } },
+  fast: { label: 'fast', get description() { return translate('ui.fastServiceTier') } },
 }
 
 export const MODEL_DIRECTIVE_API_FORMATS = [

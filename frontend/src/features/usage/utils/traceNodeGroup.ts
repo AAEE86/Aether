@@ -1,3 +1,4 @@
+import { translate } from '@/i18n'
 import type { CandidateRecord } from '@/api/requestTrace'
 
 // 节点组类型
@@ -55,7 +56,7 @@ export const getProviderDisplayName = (
   options: { allowAuthTypeFallback?: boolean } = {},
 ): string => {
   const allowAuthTypeFallback = options.allowAuthTypeFallback ?? true
-  if (!attempt) return '未知'
+  if (!attempt) return translate('chart.unknown')
   const providerName = String(attempt.provider_name || '').trim()
   if (providerName) return providerName
   if (allowAuthTypeFallback) {
@@ -64,5 +65,5 @@ export const getProviderDisplayName = (
       return AUTH_TYPE_PROVIDER_LABEL_MAP[authType]
     }
   }
-  return '未知'
+  return translate('chart.unknown')
 }

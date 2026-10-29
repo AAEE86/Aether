@@ -1,3 +1,4 @@
+import { translate } from '@/i18n'
 export interface BatchManualProxyNode {
   name: string
   proxy_url: string
@@ -25,8 +26,8 @@ export function parseBatchProxyNodeInput(input: string): BatchProxyNodeParseResu
     try {
       nodes.push(parseBatchProxyNodeEntry(entry))
     } catch (err) {
-      const message = err instanceof Error ? err.message : '格式不正确'
-      errors.push(`第 ${index + 1} 条 ${entry}: ${message}`)
+      const message = err instanceof Error ? err.message : translate('ui.invalidFormat')
+      errors.push(translate('feedback.proxy.entryError', { index: index + 1, entry, message }))
     }
   })
 
@@ -38,22 +39,22 @@ function parseBatchProxyNodeEntry(entry: string): BatchManualProxyNode {
   try {
     url = new URL(entry)
   } catch {
-    throw new Error('必须是合法的代理 URL')
+    throw new Error(translate('ui.mustBeAValidProxyUrl'))
   }
 
   if (!SUPPORTED_PROXY_PROTOCOLS.has(url.protocol)) {
-    throw new Error('仅支持 http/https/socks5/socks5h 协议')
+    throw new Error(translate('ui.onlyHttpHttpsSocks5Socks5hProtocolsAreSupported'))
   }
 
   const host = url.hostname.trim()
   if (!host) {
-    throw new Error('缺少主机地址')
+    throw new Error(translate('ui.missingHostAddress'))
   }
 
-  const username = decodeUrlCredential(url.username, '用户名')
-  const password = decodeUrlCredential(url.password, '密码')
+  const username = decodeUrlCredential(url.username, translate('auth.register.username'))
+  const password = decodeUrlCredential(url.password, translate('auth.register.password'))
   if (!username && password) {
-    throw new Error('包含密码时必须同时包含用户名')
+    throw new Error(translate('ui.aUsernameIsRequiredWhenAPasswordIsProvided'))
   }
 
   const port = url.port || defaultProxyPort(url.protocol)
@@ -79,7 +80,7 @@ function decodeUrlCredential(value: string, field: string): string {
   try {
     return decodeURIComponent(value)
   } catch {
-    throw new Error(`${field}包含无效的 URL 编码`)
+    throw new Error(translate('feedback.proxy.invalidCredential', { field }))
   }
 }
 

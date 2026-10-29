@@ -1,8 +1,19 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { setI18nLocale } from '@/i18n'
 
 import { proxyNodeDeleteSuccessMessage } from '../proxy-node-delete-feedback'
 
+beforeEach(() => setI18nLocale('zh-CN'))
+afterEach(() => setI18nLocale('zh-CN'))
+
 describe('proxyNodeDeleteSuccessMessage', () => {
+  it('uses the current locale for coordinated delete feedback', () => {
+    setI18nLocale('en-US')
+    expect(proxyNodeDeleteSuccessMessage(true, true))
+      .toBe('Proxy node deleted. The system default proxy and external model catalog proxy were cleared automatically.')
+    expect(proxyNodeDeleteSuccessMessage(false, false)).toBe('Proxy node deleted')
+  })
+
   it.each([
     {
       clearedSystemProxy: true,

@@ -13,19 +13,19 @@
               {{ nameHeader }}
             </TableHead>
             <TableHead class="h-8 px-2 text-right">
-              请求数
+              {{ t('stats.metric.requests') }}
             </TableHead>
             <TableHead class="h-8 px-2 text-right">
               <div class="flex flex-col text-xs gap-0.5 whitespace-nowrap">
-                <span>输入/输出</span>
-                <span class="text-muted-foreground font-normal">缓存</span>
+                <span>{{ t('ui.inputOutput') }}</span>
+                <span class="text-muted-foreground font-normal">{{ t('ui.cache') }}</span>
               </div>
             </TableHead>
             <TableHead class="h-8 px-2 text-right">
-              费用
+              {{ t('ui.cost7fe8603') }}
             </TableHead>
             <TableHead class="h-8 px-2 text-right">
-              缓存命中率
+              {{ t('ui.cacheHitRate') }}
             </TableHead>
             <TableHead
               v-for="column in extraColumns"
@@ -91,6 +91,8 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+
 import Card from '@/components/ui/card.vue'
 import Table from '@/components/ui/table.vue'
 import TableHeader from '@/components/ui/table-header.vue'
@@ -115,4 +117,6 @@ withDefaults(defineProps<{
 }>(), {
   extraColumns: () => [],
 })
+
+const { t } = useI18n()
 </script>

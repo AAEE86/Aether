@@ -9,7 +9,7 @@
     <button
       type="button"
       class="h-7 w-6 shrink-0 inline-flex items-center justify-center rounded-sm text-muted-foreground/60 hover:text-muted-foreground hover:bg-muted cursor-grab active:cursor-grabbing"
-      title="拖拽排序"
+      :title="t('ui.dragToReorder')"
       draggable="true"
       @dragstart="(e: DragEvent) => $emit('dragstart', e)"
       @dragend="$emit('dragend')"
@@ -38,13 +38,13 @@
       </SelectTrigger>
       <SelectContent>
         <SelectItem value="set">
-          覆写
+          {{ t('ui.overwrite') }}
         </SelectItem>
         <SelectItem value="drop">
-          删除
+          {{ t('ui.delete') }}
         </SelectItem>
         <SelectItem value="rename">
-          重命名
+          {{ t('ui.rename') }}
         </SelectItem>
       </SelectContent>
     </Select>
@@ -53,7 +53,7 @@
       size="icon"
       class="h-7 w-7 shrink-0"
       :class="rule.condition ? 'text-primary' : ''"
-      title="条件触发"
+      :title="t('ui.conditional')"
       @click="$emit('toggleCondition')"
     >
       <Filter class="w-3 h-3" />
@@ -69,7 +69,7 @@
       <span class="text-muted-foreground text-xs">=</span>
       <Input
         :model-value="rule.value"
-        placeholder="值"
+        :placeholder="t('ui.value')"
         size="sm"
         class="flex-1 min-w-0 h-7 text-xs"
         @update:model-value="(v) => $emit('update:field', 'value', v)"
@@ -87,7 +87,7 @@
     <template v-else-if="rule.action === 'rename'">
       <Input
         :model-value="rule.from"
-        placeholder="原名"
+        :placeholder="t('ui.originalName')"
         size="sm"
         class="flex-1 min-w-0 h-7 text-xs"
         @update:model-value="(v) => $emit('update:field', 'from', v)"
@@ -95,7 +95,7 @@
       <span class="text-muted-foreground text-xs">→</span>
       <Input
         :model-value="rule.to"
-        placeholder="新名"
+        :placeholder="t('ui.newName')"
         size="sm"
         class="flex-1 min-w-0 h-7 text-xs"
         @update:model-value="(v) => $emit('update:field', 'to', v)"
@@ -121,6 +121,8 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+
 import { computed } from 'vue'
 import { Filter, GripVertical, X } from 'lucide-vue-next'
 import {
@@ -173,6 +175,8 @@ defineEmits<{
   remove: []
 }>()
 
+const { t } = useI18n()
+
 const palette = computed(() => (props.kind === 'request'
   ? {
       border: 'border-primary/60',
@@ -191,22 +195,22 @@ const palette = computed(() => (props.kind === 'request'
 
 const labels = computed(() => (props.kind === 'request'
   ? {
-      marker: '请求头',
+      marker: t('ui.requestHeaders'),
       markerText: 'H',
-      enableHint: '已禁用，点击启用这条请求头规则',
-      disableHint: '已启用，点击禁用这条请求头规则',
-      namePlaceholder: '名称',
-      dropPlaceholder: '要删除的名称',
-      conditionPathHint: '请求体字段路径',
+      enableHint: t('ui.enableThisRequestHeaderRule'),
+      disableHint: t('ui.disableThisRequestHeaderRule'),
+      namePlaceholder: t('stats.column.name'),
+      dropPlaceholder: t('ui.nameToDelete'),
+      conditionPathHint: t('ui.requestBodyFieldPath'),
     }
   : {
-      marker: '响应头',
+      marker: t('ui.responseHeaders'),
       markerText: 'R',
-      enableHint: '已禁用，点击启用这条响应头规则',
-      disableHint: '已启用，点击禁用这条响应头规则',
-      namePlaceholder: '响应头名称',
-      dropPlaceholder: '要删除的响应头',
-      conditionPathHint: '响应体字段路径',
+      enableHint: t('ui.enableThisResponseHeaderRule'),
+      disableHint: t('ui.disableThisResponseHeaderRule'),
+      namePlaceholder: t('ui.responseHeaderName'),
+      dropPlaceholder: t('ui.responseHeaderToDelete'),
+      conditionPathHint: t('ui.responseBodyFieldPath'),
     }))
 
 const rowClass = computed(() => [
@@ -215,4 +219,5 @@ const rowClass = computed(() => [
   props.dragging ? `opacity-60 ${palette.value.dragging}` : '',
   props.dragOver ? `ring-1 ${palette.value.dragOver}` : '',
 ])
+
 </script>

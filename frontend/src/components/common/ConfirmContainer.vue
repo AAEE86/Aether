@@ -1,10 +1,10 @@
 <template>
   <AlertDialog
     :model-value="state.isOpen"
-    :title="state.title || '确认操作'"
+    :title="state.title"
     :description="state.message"
-    :confirm-text="state.confirmText || '确认'"
-    :cancel-text="state.cancelText || '取消'"
+    :confirm-text="state.confirmText"
+    :cancel-text="state.cancelText"
     :type="state.variant || 'question'"
     @update:model-value="handleClose"
     @confirm="handleConfirm"
@@ -23,4 +23,5 @@ function handleClose(value: boolean) {
     handleCancel()
   }
 }
+
 </script>

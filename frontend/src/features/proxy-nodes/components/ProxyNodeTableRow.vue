@@ -7,7 +7,7 @@
       <button
         type="button"
         class="inline-flex h-5 w-5 items-center justify-center rounded-md text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
-        :title="expanded ? legacyT('收起数据') : legacyT('展开数据')"
+        :title="expanded ? t('ui.collapseData') : t('ui.expandData')"
         @click="$emit('toggle-details')"
       >
         <ChevronDown
@@ -31,7 +31,7 @@
           variant="outline"
           class="text-[10px] px-1.5 py-0"
         >
-          {{ legacyT('手动') }}
+          {{ t('ui.manual') }}
         </Badge>
         <Badge
           v-if="node.tunnel_mode"
@@ -45,7 +45,7 @@
           :variant="schedulingBadge.variant"
           class="text-[10px] px-1.5 py-0"
         >
-          {{ legacyT(schedulingBadge.label) }}
+          {{ schedulingBadge.label }}
         </Badge>
         <HardwareTooltip :node="node" />
       </div>
@@ -59,16 +59,16 @@
     <TableCell class="py-4 min-w-0">
       <span
         class="block min-w-0 truncate text-sm text-muted-foreground"
-        :title="legacyT(formatProxyNodeRegion(node.region))"
-      >{{ legacyT(formatProxyNodeRegion(node.region)) }}</span>
+        :title="formatProxyNodeRegion(node.region)"
+      >{{ formatProxyNodeRegion(node.region) }}</span>
     </TableCell>
     <TableCell class="py-4 text-center">
       <Badge
         :variant="proxyNodeStatusVariant(node.status)"
-        :title="legacyT(proxyNodeStatusTitle(node))"
+        :title="proxyNodeStatusTitle(node)"
         class="font-medium px-2.5 py-0.5 text-xs"
       >
-        {{ legacyT(proxyNodeStatusLabel(node)) }}
+        {{ proxyNodeStatusLabel(node) }}
       </Badge>
     </TableCell>
     <TableCell class="py-4 text-center">
@@ -95,7 +95,7 @@
           variant="ghost"
           size="icon"
           class="h-8 w-8"
-          :title="testing ? legacyT('测试中...') : legacyT('测试连通性')"
+          :title="testing ? t('ui.testing7b6187c') : t('ui.testConnectivity')"
           :disabled="testing"
           @click="$emit('test')"
         >
@@ -113,7 +113,7 @@
           variant="ghost"
           size="icon"
           class="h-8 w-8"
-          :title="legacyT('编辑')"
+          :title="t('ui.edit0518365')"
           @click="$emit('edit')"
         >
           <SquarePen class="h-4 w-4" />
@@ -123,7 +123,7 @@
           variant="ghost"
           size="icon"
           class="h-8 w-8"
-          :title="legacyT('远程配置')"
+          :title="t('ui.remoteConfig')"
           @click="$emit('config')"
         >
           <Settings class="h-4 w-4" />
@@ -133,7 +133,7 @@
           variant="ghost"
           size="icon"
           class="h-8 w-8"
-          :title="legacyT('连接事件')"
+          :title="t('ui.connectionEvents')"
           @click="$emit('view-events')"
         >
           <History class="h-4 w-4" />
@@ -142,7 +142,7 @@
           variant="ghost"
           size="icon"
           class="h-8 w-8"
-          :title="legacyT('删除')"
+          :title="t('ui.delete')"
           @click="$emit('delete')"
         >
           <Trash2 class="h-4 w-4" />
@@ -207,6 +207,6 @@ defineEmits<{
   delete: []
 }>()
 
-const { legacyT, locale } = useI18n()
+const { t, locale } = useI18n()
 const schedulingBadge = computed(() => proxyNodeSchedulingBadge(props.node))
 </script>

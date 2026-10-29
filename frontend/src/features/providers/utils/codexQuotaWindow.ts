@@ -1,3 +1,5 @@
+
+import { translate as t } from '@/i18n'
 import type { QuotaWindowSnapshot } from '@/api/endpoints/types'
 
 const MINUTES_PER_HOUR = 60
@@ -13,25 +15,25 @@ export interface CodexQuotaWindowPresentation {
 
 function formatCodexQuotaPeriod(windowMinutes: number): string {
   if (windowMinutes === 5 * MINUTES_PER_HOUR) return '5H'
-  if (windowMinutes === MINUTES_PER_WEEK) return '周'
-  if (windowMinutes >= MIN_MONTH_MINUTES && windowMinutes <= MAX_MONTH_MINUTES) return '月'
+  if (windowMinutes === MINUTES_PER_WEEK) return t('providers.antigravity.quota.period.weekly')
+  if (windowMinutes >= MIN_MONTH_MINUTES && windowMinutes <= MAX_MONTH_MINUTES) return t('ui.month')
 
   if (windowMinutes % MINUTES_PER_WEEK === 0) {
-    return `${windowMinutes / MINUTES_PER_WEEK}周`
+    return t('providers.migration.w1d642e', { value: String(windowMinutes / MINUTES_PER_WEEK) })
   }
   if (windowMinutes % MINUTES_PER_DAY === 0) {
-    return `${windowMinutes / MINUTES_PER_DAY}天`
+    return t('providers.migration.d6e75ee', { value: String(windowMinutes / MINUTES_PER_DAY) })
   }
   if (windowMinutes % MINUTES_PER_HOUR === 0) {
     return `${windowMinutes / MINUTES_PER_HOUR}H`
   }
-  return `${windowMinutes}分钟`
+  return t('providers.migration.m248510', { value: String(windowMinutes) })
 }
 
 function getLegacyCodexQuotaPeriod(code: string, label: string): string | null {
   if (code === '5h') return '5H'
-  if (code === 'weekly') return '周'
-  if (code === 'monthly') return '月'
+  if (code === 'weekly') return t('providers.antigravity.quota.period.weekly')
+  if (code === 'monthly') return t('ui.month')
   return label || null
 }
 
@@ -76,7 +78,7 @@ export function getCodexQuotaWindowPresentation(
 
 export function getCodexQuotaWindowLimitLabel(window: QuotaWindowSnapshot): string | null {
   const presentation = getCodexQuotaWindowPresentation(window)
-  return presentation ? `${presentation.label}限额` : null
+  return presentation ? t('providers.migration.limit0f5703', { value: String(presentation.label) }) : null
 }
 
 export function getCodexPrimaryQuotaWindow(

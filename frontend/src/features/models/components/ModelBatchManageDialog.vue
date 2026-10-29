@@ -15,7 +15,7 @@
             <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
             <Input
               v-model="batchManageSearchQuery"
-              placeholder="搜索模型..."
+              :placeholder="t('ui.searchModelscd01488')"
               class="pl-8 h-9"
             />
           </div>
@@ -44,7 +44,7 @@
 
         <!-- 快捷选中 -->
         <div class="flex flex-wrap items-center gap-1.5">
-          <span class="text-xs text-muted-foreground mr-0.5">快捷选中:</span>
+          <span class="text-xs text-muted-foreground mr-0.5">{{ t('ui.quickSelect') }}</span>
           <button
             v-for="shortcut in batchManageShortcuts"
             :key="shortcut.label"
@@ -73,7 +73,7 @@
                 class="flex items-center justify-between px-3 py-2 bg-muted sticky top-0 z-10"
               >
                 <div class="flex items-center gap-2">
-                  <span class="text-xs font-medium">模型</span>
+                  <span class="text-xs font-medium">{{ t('ui.model') }}</span>
                   <span class="text-xs text-muted-foreground">({{ filteredBatchManageModels.length }})</span>
                 </div>
                 <button
@@ -81,7 +81,7 @@
                   class="text-xs text-primary hover:underline shrink-0"
                   @click="toggleAllBatchManageModels"
                 >
-                  {{ isAllBatchManageModelsSelected ? '取消全选' : '全选' }}
+                  {{ isAllBatchManageModelsSelected ? t('ui.deselectAll') : t('ui.selectAll') }}
                 </button>
               </div>
               <div class="space-y-1 p-2">
@@ -135,7 +135,7 @@
                       :class="model.is_active ? 'text-green-600 border-green-500/60' : ''"
                       class="text-xs"
                     >
-                      {{ model.is_active ? '活跃' : '停用' }}
+                      {{ model.is_active ? t('ui.activee85e590') : t('ui.disable4e6fd0e') }}
                     </Badge>
                   </div>
                 </div>
@@ -148,7 +148,7 @@
               class="flex flex-col items-center justify-center py-12 text-muted-foreground"
             >
               <p class="text-sm">
-                {{ batchManageSearchQuery ? '无匹配结果' : '暂无模型' }}
+                {{ batchManageSearchQuery ? t('ui.noMatchingResults') : t('ui.noModels') }}
               </p>
             </div>
           </div>
@@ -188,14 +188,14 @@
               v-if="batchManageAction === 'delete'"
               class="w-4 h-4 mr-1 animate-spin"
             />
-            {{ batchManageAction === 'delete' ? '删除中...' : '删除选中' }}
+            {{ batchManageAction === 'delete' ? t('ui.deleting') : t('ui.deleteSelected') }}
           </Button>
           <Button
             class="w-full whitespace-nowrap sm:flex-1 lg:w-auto lg:flex-none"
             variant="outline"
             @click="$emit('update:open', false)"
           >
-            关闭
+            {{ t('ui.close') }}
           </Button>
         </div>
       </div>
@@ -343,7 +343,7 @@ async function loadBatchManageModels() {
   } catch (err: unknown) {
     if (requestId !== batchManageModelsRequestId) return
     log.error('加载批量管理模型失败:', err)
-    showError(parseApiError(err, '加载模型失败'), '加载模型失败')
+    showError(parseApiError(err, t('ui.failedToLoadModels')), t('ui.failedToLoadModels'))
   } finally {
     if (requestId === batchManageModelsRequestId) {
       batchManageLoading.value = false
@@ -557,11 +557,11 @@ const batchManageShortcuts = computed(() => {
     { label: t('models.management.batch.state.unchanged'), description: t('models.management.batch.shortcut.unchanged'), filter: m => getBatchPricingState(m) === 'unchanged' },
     { label: t('models.management.batch.state.unsupported'), description: t('models.management.batch.shortcut.unsupported'), filter: m => getBatchPricingState(m) === 'unsupported' },
     { label: t('models.management.batch.state.unavailable'), description: t('models.management.batch.shortcut.unavailable'), filter: m => getBatchPricingState(m) === 'unavailable' },
-    { label: '无提供商', description: '没有关联任何提供商的模型', filter: m => (m.provider_count || 0) === 0 },
-    { label: '无活跃提供商', description: '有提供商但没有活跃提供商的模型', filter: m => (m.active_provider_count || 0) === 0 && (m.provider_count || 0) > 0 },
-    { label: '禁用', description: '被禁用的模型', filter: m => !m.is_active },
-    { label: '未调用', description: '没有调用记录的模型', filter: m => (m.usage_count || 0) === 0 },
-    { label: '无价格', description: '没有配置任何价格的模型', filter: m => hasNoPrice(m) },
+    { get label() { return t('ui.noProviders') }, get description() { return t('ui.modelsWithoutAnyLinkedProviders') }, filter: m => (m.provider_count || 0) === 0 },
+    { get label() { return t('ui.noActiveProviders') }, get description() { return t('ui.modelsWithProvidersButNoneActive') }, filter: m => (m.active_provider_count || 0) === 0 && (m.provider_count || 0) > 0 },
+    { get label() { return t('ui.disable') }, get description() { return t('ui.disabledModels') }, filter: m => !m.is_active },
+    { get label() { return t('ui.unused') }, get description() { return t('ui.modelsWithNoRecordedRequests') }, filter: m => (m.usage_count || 0) === 0 },
+    { get label() { return t('ui.noPricing') }, get description() { return t('ui.modelsWithoutConfiguredPricing') }, filter: m => hasNoPrice(m) },
   ]
   return defs.map(d => ({ ...d, count: models.filter(d.filter).length }))
 })
@@ -611,7 +611,7 @@ async function loadBatchManageOnlineModels() {
       batchManageOnlineModels.value = await getModelsDevList(false)
     } catch (err: unknown) {
       log.error('加载在线模型价格失败:', err)
-      showError(parseApiError(err, '加载在线模型价格失败'), '加载失败')
+      showError(parseApiError(err, t('ui.failedToLoadOnlineModelPricing')), t('ui.failedToLoad'))
     } finally {
       batchManageOnlineLoading.value = false
       batchManageOnlineModelsRequest = null
@@ -680,7 +680,7 @@ async function confirmBatchSyncPrices() {
         successCount += 1
       } catch (err: unknown) {
         failedIds.add(entry.model.id)
-        failureMessages.push(`${entry.model.display_name}: ${parseApiError(err, '更新失败')}`)
+        failureMessages.push(`${entry.model.display_name}: ${parseApiError(err, t('update.error.updateFailed'))}`)
       }
     })
     await runTasksWithConcurrency(tasks)
@@ -694,7 +694,7 @@ async function confirmBatchSyncPrices() {
           count: failureMessages.length,
           details: failureMessages.slice(0, 2).join(locale.value === 'zh-CN' ? '；' : '; '),
         }),
-        '部分失败',
+        t('ui.someOperationsFailed'),
       )
     }
     emit('changed')
@@ -712,8 +712,8 @@ async function confirmBatchDeleteModels() {
   if (count === 0) return
 
   const confirmed = await confirmDanger(
-    `确定删除选中的 ${count} 个模型吗？\n\n此操作不可撤销。`,
-    '批量删除模型'
+    t('ui.deleteTheSelectedValueModelsThisCannotBeUndone', { count }),
+    t('ui.deleteModelsInBulk')
   )
   if (!confirmed) return
 
@@ -724,10 +724,10 @@ async function confirmBatchDeleteModels() {
     const result = await batchDeleteGlobalModels(ids)
 
     if (result.success_count > 0) {
-      success(`成功删除 ${result.success_count} 个模型`)
+      success(t('ui.deletedValueModels', { count: result.success_count }))
     }
     if (result.failed.length > 0) {
-      showError(`${result.failed.length} 个模型删除失败`, '部分失败')
+      showError(t('ui.failedToDeleteValueModels', { count: result.failed.length }), t('ui.someOperationsFailed'))
     }
 
     emit('modelsDeleted', ids)
@@ -735,7 +735,7 @@ async function confirmBatchDeleteModels() {
     emit('changed')
     await loadBatchManageModels()
   } catch (err: unknown) {
-    showError(parseApiError(err, '批量删除失败'), '错误')
+    showError(parseApiError(err, t('ui.bulkDeletionFailed')), t('ui.error'))
   } finally {
     batchManageAction.value = null
     submittingBatchManage.value = false

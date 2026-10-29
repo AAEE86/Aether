@@ -1,3 +1,4 @@
+import { translate } from '@/i18n'
 import { useConfirm } from './useConfirm'
 
 /**
@@ -10,7 +11,7 @@ export function useDiscardConfirm(isDirty: () => boolean) {
 
   async function confirmDiscard(): Promise<boolean> {
     if (!isDirty()) return true
-    return confirmWarning('有未保存的更改，确定要关闭吗？', '放弃更改')
+    return confirmWarning(translate('ui.youHaveUnsavedChangesCloseWithoutSaving'), translate('ui.discardChanges'))
   }
 
   return { confirmDiscard }

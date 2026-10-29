@@ -31,7 +31,7 @@
           <div class="flex items-center justify-between mb-4">
             <div class="flex items-center gap-3">
               <h4 class="text-sm font-semibold">
-                请求链路追踪
+                {{ t('ui.requestTrace') }}
               </h4>
               <Badge :variant="getFinalStatusBadgeVariant(computedFinalStatus)">
                 {{ getFinalStatusLabel(computedFinalStatus) }}
@@ -44,12 +44,12 @@
                 :class="{ active: showSkippedCandidates }"
                 :aria-pressed="showSkippedCandidates"
                 :title="showSkippedCandidates
-                  ? '隐藏被跳过的候选'
-                  : '被跳过的候选在调度阶段就被判定本次不可用，从未向上游发起请求'"
+                  ? t('ui.hideSkippedCandidates')
+                  : t('ui.skippedCandidatesWereDeemedUnavailableDuringSchedulingNoRequestWas')"
                 data-timeline-skipped-toggle
                 @click="showSkippedCandidates = !showSkippedCandidates"
               >
-                {{ showSkippedCandidates ? '隐藏' : '显示' }}被跳过候选（{{ skippedTraceCandidates.length }}）
+                {{ showSkippedCandidates ? t('ui.hide') : t('ui.show') }}{{ t('ui.skippedCandidates') }}{{ skippedTraceCandidates.length }}）
               </button>
             </div>
             <div class="text-sm text-muted-foreground">
@@ -153,7 +153,7 @@
     >
       <div class="p-8 text-center">
         <p class="text-sm text-muted-foreground">
-          暂无追踪数据
+          {{ t('ui.noTraceData') }}
         </p>
       </div>
     </Card>
@@ -161,6 +161,8 @@
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+
 import { ref, watch, computed, onBeforeUnmount } from 'vue'
 import { isAxiosError } from 'axios'
 import Card from '@/components/ui/card.vue'
@@ -221,6 +223,8 @@ const emit = defineEmits<{
     errorMessage?: string | null
   }]
 }>()
+
+const { t } = useI18n()
 
 // 用量数据（从 props 获取）
 const usageData = computed(() => props.usageData)
@@ -305,7 +309,6 @@ const rawTimeline = computed<CandidateRecord[]>(() => {
   if (showSkippedCandidates.value) return allTraceCandidates.value
   return allTraceCandidates.value.filter(c => c.status !== 'skipped')
 })
-
 
 const schedulingAudit = computed<Record<string, unknown> | null>(() => {
   const metadata = props.requestMetadata
@@ -811,7 +814,7 @@ const loadTrace = async (silent = false) => {
         return
       }
       if (!silent) {
-        error.value = parseApiError(err, '加载失败')
+        error.value = parseApiError(err, t('ui.failedToLoad'))
       }
       log.error('加载请求追踪失败:', err)
     } finally {

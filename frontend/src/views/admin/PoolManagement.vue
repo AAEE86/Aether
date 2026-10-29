@@ -48,10 +48,10 @@
           <Database class="h-8 w-8 text-muted-foreground" />
         </div>
         <p class="text-sm text-muted-foreground mt-4">
-          暂无 Provider
+          {{ t('ui.noProviderse1e945c') }}
         </p>
         <p class="text-xs text-muted-foreground mt-1">
-          请先添加 Provider
+          {{ t('ui.addAProviderFirst') }}
         </p>
       </div>
 
@@ -64,7 +64,7 @@
           <Database class="h-8 w-8 text-muted-foreground" />
         </div>
         <p class="text-sm text-muted-foreground mt-4">
-          请选择一个 Provider 查看账号
+          {{ t('ui.selectAProviderToViewItsAccounts') }}
         </p>
       </div>
 
@@ -108,12 +108,12 @@
                       :checked="selectAllFilteredPoolKeys || isCurrentPoolKeyPageFullySelected"
                       :indeterminate="!selectAllFilteredPoolKeys && isCurrentPoolKeyPagePartiallySelected"
                       :disabled="keyPage.keys.length === 0 || poolKeySelectionBusy || selectAllFilteredPoolKeys"
-                      aria-label="选择当前页账号"
+                      :aria-label="t('ui.selectAccountsOnThisPage')"
                       data-testid="pool-select-page-desktop"
                       @update:checked="toggleCurrentPoolKeyPage"
                     />
                     <div class="flex items-baseline gap-2">
-                      <span class="leading-none">名称</span>
+                      <span class="leading-none">{{ t('stats.column.name') }}</span>
                       <span
                         v-if="selectedKeyCount > 0"
                         class="text-[11px] font-medium leading-none tabular-nums text-primary"
@@ -130,13 +130,13 @@
                   class="font-semibold whitespace-nowrap"
                   :style="{ width: desktopColumnWidths.quota }"
                 >
-                  配额
+                  {{ t('ui.quotae284fc9') }}
                 </TableHead>
                 <TableHead
                   class="px-2 font-semibold text-center whitespace-nowrap"
                   :style="{ width: desktopColumnWidths.stats }"
                 >
-                  <span>统计</span>
+                  <span>{{ t('ui.statistics89abe8c') }}</span>
                 </TableHead>
                 <SortableTableHead
                   class="font-semibold text-center whitespace-nowrap"
@@ -146,10 +146,10 @@
                   default-direction="desc"
                   align="center"
                   :style="{ width: desktopColumnWidths.imported }"
-                  title="按导入时间排序"
+                  :title="t('ui.sortByImportTime')"
                   @sort="handleTableSort"
                 >
-                  导入时间
+                  {{ t('ui.importedAt') }}
                 </SortableTableHead>
                 <SortableTableHead
                   class="font-semibold text-center whitespace-nowrap"
@@ -159,10 +159,10 @@
                   default-direction="desc"
                   align="center"
                   :style="{ width: desktopColumnWidths.lastUsed }"
-                  title="按最后使用时间排序"
+                  :title="t('ui.sortByLastUsed')"
                   @sort="handleTableSort"
                 >
-                  最后使用
+                  {{ t('ui.lastUsed') }}
                 </SortableTableHead>
                 <SortableTableHead
                   class="font-semibold text-center whitespace-nowrap"
@@ -172,10 +172,10 @@
                   default-direction="desc"
                   align="center"
                   :style="{ width: desktopColumnWidths.score }"
-                  title="按分数排序"
+                  :title="t('ui.sortByScore')"
                   @sort="handleTableSort"
                 >
-                  分数
+                  {{ t('ui.score') }}
                 </SortableTableHead>
                 <SortableTableHead
                   class="font-semibold text-center whitespace-nowrap"
@@ -183,12 +183,11 @@
                   :sortable="false"
                   align="center"
                   :filter-active="statusFilter !== 'all'"
-                  filter-title="筛选状态"
+                  :filter-title="t('ui.filterStatus')"
                   filter-content-class="w-44 p-1 rounded-2xl border-border bg-card text-foreground shadow-2xl backdrop-blur-xl"
                   :style="{ width: desktopColumnWidths.status }"
                 >
-                  状态
-                  <template #filter="{ close }">
+                  {{ t('ui.status6320b4a') }} <template #filter="{ close }">
                     <TableFilterMenu
                       v-model="statusFilter"
                       :options="poolKeyStatusFilterOptions"
@@ -200,7 +199,7 @@
                   class="px-2 font-semibold text-center whitespace-nowrap"
                   :style="{ width: desktopColumnWidths.actions }"
                 >
-                  操作
+                  {{ t('ui.actionsed31fbb') }}
                 </TableHead>
               </TableRow>
             </TableHeader>
@@ -219,14 +218,14 @@
                       class="h-3.5 w-3.5 shrink-0"
                       :checked="isPoolKeySelected(key.key_id)"
                       :disabled="poolKeySelectionBusy || selectAllFilteredPoolKeys"
-                      :aria-label="`选择账号 ${key.key_name || key.key_id}`"
+                      :aria-label="t('ui.selectAccountValue', { name: key.key_name || key.key_id })"
                       :data-testid="`pool-select-desktop-${key.key_id}`"
                       @update:checked="togglePoolKeySelection(key.key_id, $event === true)"
                     />
                     <div class="min-w-0 flex-1">
                       <div class="flex items-center gap-1.5 min-w-0">
                         <span class="text-sm truncate block">
-                          {{ key.key_name || '未命名' }}
+                          {{ key.key_name || t('ui.untitled') }}
                         </span>
                       </div>
                       <div class="flex items-center flex-wrap gap-1 text-[11px] text-muted-foreground mt-0.5 min-w-0">
@@ -247,7 +246,7 @@
                           v-else
                           type="button"
                           class="h-4 px-1 rounded text-[10px] tabular-nums text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors shrink-0"
-                          title="点击编辑优先级"
+                          :title="t('ui.editPriority')"
                           @click="startEditInternalPriority(key)"
                         >
                           P{{ key.internal_priority ?? 50 }}
@@ -257,7 +256,7 @@
                           variant="ghost"
                           size="icon"
                           class="h-4 w-4 shrink-0"
-                          title="下载 OAuth 授权文件"
+                          :title="t('ui.downloadOauthAuthorizationFile')"
                           @click.stop="downloadRefreshToken(key)"
                         >
                           <Download class="w-2.5 h-2.5" />
@@ -267,7 +266,7 @@
                           variant="ghost"
                           size="icon"
                           class="h-4 w-4 shrink-0"
-                          title="复制密钥"
+                          :title="t('ui.copyKey')"
                           @click.stop="copyFullKey(key)"
                         >
                           <Copy class="w-2.5 h-2.5" />
@@ -427,12 +426,12 @@
                   class="h-3.5 w-3.5 shrink-0"
                   :checked="isPoolKeySelected(key.key_id)"
                   :disabled="poolKeySelectionBusy || selectAllFilteredPoolKeys"
-                  :aria-label="`选择账号 ${key.key_name || key.key_id}`"
+                  :aria-label="t('ui.selectAccountValue', { name: key.key_name || key.key_id })"
                   :data-testid="`pool-select-mobile-${key.key_id}`"
                   @update:checked="togglePoolKeySelection(key.key_id, $event === true)"
                 />
                 <div class="min-w-0 truncate text-sm font-medium">
-                  {{ key.key_name || '未命名' }}
+                  {{ key.key_name || t('ui.untitled') }}
                 </div>
               </div>
 
@@ -447,8 +446,7 @@
                 <span
                   v-if="key.cooldown_ttl_seconds"
                   class="inline-flex items-center rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-[10px] font-medium leading-4 text-red-700 dark:text-red-300"
-                >
-                  冷却 {{ formatTTL(key.cooldown_ttl_seconds) }}
+                > {{ t('ui.cooldown') }} {{ formatTTL(key.cooldown_ttl_seconds) }}
                 </span>
                 <template
                   v-for="item in keyUiStateMap[key.key_id]?.mobileTagItems || []"
@@ -459,7 +457,7 @@
                     type="button"
                     class="inline-flex max-w-full items-center rounded-full border px-2 py-0.5 text-[10px] font-medium leading-4 hover:border-primary/40 hover:text-foreground"
                     :class="getMobileTagClass(item)"
-                    :title="`${item.label}，点击编辑优先级`"
+                    :title="t('ui.valueClickToEditPriority', { value: item.label })"
                     @click="quickEditInternalPriority(key)"
                   >
                     {{ item.label }}
@@ -500,15 +498,15 @@
                     variant="mobile"
                   />
                   <div class="flex items-center justify-between gap-2 border-t border-border/40 pt-1 mt-1">
-                    <span class="text-muted-foreground">导入</span>
+                    <span class="text-muted-foreground">{{ t('ui.import') }}</span>
                     <span class="font-medium text-foreground/90">{{ keyUiStateMap[key.key_id]?.importedAtRelative || '-' }}</span>
                   </div>
                   <div class="flex items-center justify-between gap-2">
-                    <span class="text-muted-foreground">最后使用</span>
+                    <span class="text-muted-foreground">{{ t('ui.lastUsed') }}</span>
                     <span class="font-medium text-foreground/90">{{ keyUiStateMap[key.key_id]?.lastUsedRelative || '-' }}</span>
                   </div>
                   <div class="flex items-center justify-between gap-2">
-                    <span class="text-muted-foreground">分数</span>
+                    <span class="text-muted-foreground">{{ t('ui.score') }}</span>
                     <div class="flex items-center gap-1">
                       <span class="font-mono font-medium text-foreground/90 tabular-nums">
                         {{ formatPoolScore(key.pool_score?.score) }}
@@ -577,7 +575,7 @@
             <KeyRound class="h-8 w-8 text-muted-foreground" />
           </div>
           <p class="text-sm text-muted-foreground mt-4">
-            {{ hasPoolKeyFilters ? '未找到匹配账号' : '暂无账号' }}
+            {{ hasPoolKeyFilters ? t('ui.noMatchingAccounts') : t('ui.noAccounts') }}
           </p>
           <Button
             v-if="hasPoolKeyFilters"
@@ -586,7 +584,7 @@
             class="mt-3"
             @click="clearPoolKeyFilters"
           >
-            清除筛选
+            {{ t('ui.clearFilters') }}
           </Button>
           <Button
             v-else
@@ -595,8 +593,7 @@
             class="mt-3"
             @click="showImportDialog = true"
           >
-            <Upload class="w-3.5 h-3.5 mr-1.5" />
-            添加账号
+            <Upload class="w-3.5 h-3.5 mr-1.5" /> {{ t('ui.addAccount') }}
           </Button>
         </div>
 
@@ -887,7 +884,7 @@ function prefetchProviderDetailDrawer(): void {
 }
 
 const { success, error: showError, warning: showWarning } = useToast()
-const { legacyT, t } = useI18n()
+const { t } = useI18n()
 const { confirm } = useConfirm()
 const { copyToClipboard } = useClipboard()
 const { tick: countdownTick, start: startCountdownTimer } = useCountdownTimer()
@@ -974,22 +971,22 @@ interface PoolDemandMetricSample {
 const showDemandMetricsDialog = ref(false)
 const providerDemandMetricSamples = ref<PoolDemandMetricSample[]>([])
 const poolKeyStatusFilterOptions: Array<{ value: PoolManagementViewState['status'], label: string }> = [
-  { value: 'all', label: '全部状态' },
-  { value: 'available', label: '可用' },
-  { value: 'cooldown', label: '冷却中' },
-  { value: 'inactive', label: '已禁用' },
-  { value: 'invalid', label: '已失效' },
-  { value: 'expired', label: '已过期' },
-  { value: 'account_banned', label: '账号封禁' },
-  { value: 'quota_exhausted', label: '额度耗尽' },
-  { value: 'account_forbidden', label: '访问受限' },
-  { value: 'account_disabled', label: '账号停用' },
-  { value: 'workspace_deactivated', label: '工作区停用' },
-  { value: 'account_verification', label: '需要验证' },
-  { value: 'account_quarantined', label: '账号隔离' },
-  { value: 'account_blocked', label: '账号异常' },
-  { value: 'rate_limited', label: '速率受限' },
-  { value: 'cost_exhausted', label: '超限' },
+  { value: 'all', get label() { return t('ui.allStatuses') } },
+  { value: 'available', get label() { return t('ui.available4d99c97') } },
+  { value: 'cooldown', get label() { return t('ui.coolingDown') } },
+  { value: 'inactive', get label() { return t('ui.disabledbc5a87a') } },
+  { value: 'invalid', get label() { return t('ui.invalid') } },
+  { value: 'expired', get label() { return t('ui.expired') } },
+  { value: 'account_banned', get label() { return t('ui.accountBanned') } },
+  { value: 'quota_exhausted', get label() { return t('ui.quotaExhausted') } },
+  { value: 'account_forbidden', get label() { return t('ui.accessRestricted') } },
+  { value: 'account_disabled', get label() { return t('ui.accountDisabled') } },
+  { value: 'workspace_deactivated', get label() { return t('ui.workspaceDisabled') } },
+  { value: 'account_verification', get label() { return t('ui.verificationRequired') } },
+  { value: 'account_quarantined', get label() { return t('ui.accountIsolation') } },
+  { value: 'account_blocked', get label() { return t('ui.accountIssue') } },
+  { value: 'rate_limited', get label() { return t('ui.rateLimited6d5ac6f') } },
+  { value: 'cost_exhausted', get label() { return t('ui.limitExceeded') } },
 ]
 
 async function loadOverview(options: { cacheTtlMs?: number, silent?: boolean } = {}) {
@@ -1058,7 +1055,7 @@ async function loadOverview(options: { cacheTtlMs?: number, silent?: boolean } =
     if (!options.silent) {
       showError(parseApiError(err))
     } else {
-      showWarning(parseApiError(err, '同步 Provider 概览失败'))
+      showWarning(parseApiError(err, t('ui.failedToSyncProviderOverview')))
     }
   } finally {
     if (requestId === overviewRequestId) {
@@ -1117,9 +1114,9 @@ const DEFAULT_PRESET_LABELS: Record<string, string> = {
   team_first: 'Team',
   plus_first: 'Plus',
   pro_first: 'Pro',
-  recent_refresh: '刷新优先',
-  quota_balanced: '额度均衡',
-  single_account: '单号优先',
+  get recent_refresh() { return t('ui.refreshFirst') },
+  get quota_balanced() { return t('ui.balancedQuota') },
+  get single_account() { return t('ui.singleAccountFirst') },
 }
 const presetLabelsByName = ref<Record<string, string>>({ ...DEFAULT_PRESET_LABELS })
 
@@ -1244,13 +1241,13 @@ function startDemandMetricsPolling(): void {
 
 const poolSchedulingLabel = computed(() => {
   if (!selectedProviderConfig.value && selectedProviderOverview.value?.pool_enabled === false) {
-    return '未启用'
+    return t('ui.disabled')
   }
 
   const cfg = selectedProviderConfig.value
 
   // No pool_advanced config at all: use default enabled presets count
-  if (!cfg) return `${defaultEnabledPresetCount(selectedProviderType.value)} 维度`
+  if (!cfg) return t('ui.valueDimensions', { count: defaultEnabledPresetCount(selectedProviderType.value) })
 
   const presets = Array.isArray(cfg.scheduling_presets) ? cfg.scheduling_presets : []
   const presetLabels = presetLabelsByName.value
@@ -1262,7 +1259,9 @@ const poolSchedulingLabel = computed(() => {
       const enabledCount = (presets as Array<{ preset: string; enabled?: boolean }>)
         .filter(p => p.enabled !== false)
         .length
-      return enabledCount > 0 ? `${enabledCount} 维度` : '无启用维度'
+      return enabledCount > 0
+        ? t('ui.valueDimensions', { count: enabledCount })
+        : t('feedback.pool.noEnabledDimensions')
     }
 
     // Legacy string list format
@@ -1270,26 +1269,26 @@ const poolSchedulingLabel = computed(() => {
       const labels = (presets as string[])
         .map(p => presetLabels[normalizePresetName(p)])
         .filter(Boolean)
-      if (labels.length > 0) return `${labels.length} 维度`
+      if (labels.length > 0) return t('ui.valueDimensions', { count: labels.length })
     }
   }
 
   // Fallback: legacy scheduling_mode field
   if (cfg.scheduling_mode === 'multi_score') {
-    return '多维评分'
+    return t('ui.multiFactorScoring')
   }
 
   const lruEnabled = cfg.scheduling_mode === 'lru' || cfg.lru_enabled === true
   const stickyTtl = Number(cfg.sticky_session_ttl_seconds ?? 3600)
   const stickyEnabled = Number.isFinite(stickyTtl) && stickyTtl > 0
 
-  if (lruEnabled && stickyEnabled) return 'LRU + 粘性'
+  if (lruEnabled && stickyEnabled) return t('ui.lruStickySessions')
   if (lruEnabled) return 'LRU'
   if (!cfg.scheduling_mode && (cfg.lru_enabled === null || cfg.lru_enabled === undefined)) {
-    return `${defaultEnabledPresetCount(selectedProviderType.value)} 维度`
+    return t('ui.valueDimensions', { count: defaultEnabledPresetCount(selectedProviderType.value) })
   }
-  if (stickyEnabled) return '粘性'
-  return '随机'
+  if (stickyEnabled) return t('ui.sticky')
+  return t('ui.random')
 })
 
 const selectedProviderType = computed(() => {
@@ -1302,10 +1301,10 @@ const selectedProviderType = computed(() => {
 const selectedProviderStatusText = computed(() => {
   if (!selectedProviderId.value) return ''
   const providerActive = selectedProviderData.value?.is_active
-  if (providerActive === false) return '禁用'
-  if (providerActive === true) return '启用'
-  if (selectedProviderOverview.value?.pool_enabled === false) return '禁用'
-  if (selectedProviderOverview.value?.pool_enabled === true) return '启用'
+  if (providerActive === false) return t('ui.disable')
+  if (providerActive === true) return t('ui.enablef4f0ead')
+  if (selectedProviderOverview.value?.pool_enabled === false) return t('ui.disable')
+  if (selectedProviderOverview.value?.pool_enabled === true) return t('ui.enablef4f0ead')
   return ''
 })
 
@@ -1471,7 +1470,7 @@ async function loadProviderData(id: string, options: { preserveOnError?: boolean
   } catch {
     if (requestId !== providerDataRequestId || selectedProviderId.value !== id) return
     if (options.preserveOnError) {
-      showWarning('同步 Provider 详情失败，已保留当前数据')
+      showWarning(t('ui.failedToSyncProviderDetailsCurrentDataHasBeenRetained'))
     } else {
       selectedProviderData.value = null
     }
@@ -1511,7 +1510,7 @@ const {
   filteredTotal: poolKeyFilteredTotal,
   getItemId: key => key.key_id,
 })
-const selectedKeyCountLabel = computed(() => legacyT(`已选 ${selectedKeyCount.value} 个`))
+const selectedKeyCountLabel = computed(() => t('models.management.selectedCount', { count: selectedKeyCount.value }))
 const selectedPoolKeys = computed(() => selectedPoolKeyIds.value
   .map(keyId => knownPoolKeysById.value[keyId])
   .filter((key): key is PoolKeyDetail => Boolean(key)))
@@ -1886,7 +1885,7 @@ function applyPoolKeyActiveState(key: PoolKeyDetail, nextStatus: boolean): void 
     key.scheduling_reason = 'inactive'
     key.scheduling_reasons = [{
       code: 'inactive',
-      label: '已禁用',
+      get label() { return t('ui.disabledbc5a87a') },
       blocking: true,
       source: 'manual',
       ttl_seconds: null,
@@ -1986,12 +1985,12 @@ async function handleConsumeCodexResetCredit(key: PoolKeyDetail): Promise<void> 
   if (generation === undefined) return
   const pendingIdempotencyKey = getPendingCodexResetCreditIdempotencyKey(key)
   const confirmed = await confirm({
-    title: '确认使用 Codex 重置机会',
+    get title() { return t('ui.confirmCodexQuotaReset') },
     message: pendingIdempotencyKey
       ? '将继续确认上次尚未完成的 Codex 重置请求。'
       : '将消耗 1 次 Codex 重置机会，完成后自动刷新账号额度。',
-    confirmText: '确认重置',
-    cancelText: '取消',
+    get confirmText() { return t('ui.confirmReset') },
+    get cancelText() { return t('common.cancel') },
     variant: 'warning',
   })
   if (!confirmed) return
@@ -2015,9 +2014,9 @@ async function handleConsumeCodexResetCredit(key: PoolKeyDetail): Promise<void> 
       quota_snapshot: result.quota_snapshot,
     }])
     if (result.outcome === 'reset' || result.outcome === 'already_redeemed') {
-      success('Codex 重置机会已使用，账号额度已刷新')
+      success(t('ui.codexQuotaResetUsedAccountQuotaRefreshed'))
     } else {
-      showWarning(result.message || '重置请求已处理，请查看最新额度')
+      showWarning(result.message || t('ui.resetRequestProcessedCheckTheLatestQuota'))
     }
   } catch (err: unknown) {
     const responseData = typeof err === 'object' && err !== null && 'response' in err
@@ -2032,7 +2031,7 @@ async function handleConsumeCodexResetCredit(key: PoolKeyDetail): Promise<void> 
         generation,
       )
     }
-    showError(parseApiError(err, 'Codex 重置机会使用失败'))
+    showError(parseApiError(err, t('ui.failedToUseCodexQuotaReset')))
   } finally {
     consumingCodexResetCreditKeyId.value = null
   }
@@ -2126,7 +2125,7 @@ async function refreshCurrentPageQuotaInBackground(
     }
     return true
   } catch (err) {
-    showError(parseApiError(err, '刷新当前页额度失败'))
+    showError(parseApiError(err, t('ui.failedToRefreshQuotaForThisPage')))
     return false
   } finally {
     refreshingCurrentPageQuota.value = false
@@ -2134,12 +2133,12 @@ async function refreshCurrentPageQuotaInBackground(
 }
 
 const refreshButtonTitle = computed(() => {
-  if (refreshCurrentPageLoading.value) return '刷新中...'
-  if (!selectedProviderId.value) return '刷新'
-  if (!quotaRefreshSupported.value) return '刷新数据'
+  if (refreshCurrentPageLoading.value) return t('ui.refreshing')
+  if (!selectedProviderId.value) return t('ui.refresh')
+  if (!quotaRefreshSupported.value) return t('ui.refreshData')
 
   const quotaStats = currentPageQuotaRefreshStats.value
-  if (quotaStats.total === 0) return '刷新数据和额度'
+  if (quotaStats.total === 0) return t('ui.refreshDataAndQuota')
   if (quotaStats.eligibleIds.length === 0 && quotaStats.cooledDownCount > 0) {
     const waitText = quotaStats.minRemainingSeconds > 0
       ? formatTTL(quotaStats.minRemainingSeconds)
@@ -2149,7 +2148,7 @@ const refreshButtonTitle = computed(() => {
   if (quotaStats.cooledDownCount > 0) {
     return `刷新数据和额度（可刷新 ${quotaStats.eligibleIds.length}/${quotaStats.total}）`
   }
-  return '刷新数据和额度'
+  return t('ui.refreshDataAndQuota')
 })
 
 async function refreshCurrentPage() {
@@ -2201,7 +2200,7 @@ async function loadKeys(options: { cacheTtlMs?: number, silent?: boolean } = {})
       keysLoadedOnce.value = true
       showError(parseApiError(err))
     } else {
-      showWarning(parseApiError(err, '同步账号列表失败'))
+      showWarning(parseApiError(err, t('ui.failedToSyncAccounts')))
     }
   } finally {
     if (requestId === keysRequestId) {
@@ -2357,9 +2356,9 @@ async function applyInternalPriority(key: PoolKeyDetail, nextPriority: number) {
     await updateProviderKey(key.key_id, { internal_priority: normalized })
     key.internal_priority = normalized
     sortCurrentPageKeysByPriority()
-    success('账号优先级已更新')
+    success(t('ui.accountPriorityUpdated'))
   } catch (err) {
-    showError(parseApiError(err, '更新优先级失败'))
+    showError(parseApiError(err, t('ui.failedToUpdatePriority')))
   } finally {
     prioritySavingKeyId.value = null
   }
@@ -2370,7 +2369,7 @@ async function quickEditInternalPriority(key: PoolKeyDetail) {
   if (raw === null) return
   const parsed = Number(raw)
   if (!Number.isFinite(parsed)) {
-    showWarning('请输入有效数字')
+    showWarning(t('ui.enterAValidNumber'))
     return
   }
   await applyInternalPriority(key, parsed)
@@ -2487,9 +2486,9 @@ async function setKeyProxy(key: PoolKeyDetail, nodeId: string) {
     key.proxy = { node_id: nodeId, enabled: true }
     proxyDesktopPopoverOpenKeyId.value = null
     proxyMobilePopoverOpenKeyId.value = null
-    success('代理节点已设置')
+    success(t('ui.proxyNodeSet'))
   } catch (err) {
-    showError(parseApiError(err, '设置代理失败'))
+    showError(parseApiError(err, t('ui.failedToSetProxy')))
   } finally {
     savingProxyKeyId.value = null
   }
@@ -2502,9 +2501,9 @@ async function clearKeyProxy(key: PoolKeyDetail) {
     key.proxy = null
     proxyDesktopPopoverOpenKeyId.value = null
     proxyMobilePopoverOpenKeyId.value = null
-    success('已清除账号代理，将使用提供商级别代理')
+    success(t('ui.accountProxyClearedProviderLevelProxyWillBeUsed'))
   } catch (err) {
-    showError(parseApiError(err, '清除代理失败'))
+    showError(parseApiError(err, t('ui.failedToClearProxy')))
   } finally {
     savingProxyKeyId.value = null
   }
@@ -2512,9 +2511,9 @@ async function clearKeyProxy(key: PoolKeyDetail) {
 
 async function handleDeleteKey(key: PoolKeyDetail) {
   const confirmed = await confirm({
-    title: '删除账号',
+    get title() { return t('ui.deleteAccount') },
     message: `确定要删除账号 "${key.key_name || key.key_id.slice(0, 8)}" 吗？`,
-    confirmText: '删除',
+    get confirmText() { return t('ui.delete') },
     variant: 'destructive',
   })
   if (!confirmed) return
@@ -2522,7 +2521,7 @@ async function handleDeleteKey(key: PoolKeyDetail) {
   deletingKeyId.value = key.key_id
   try {
     await deleteEndpointKey(key.key_id)
-    success('账号已删除')
+    success(t('ui.accountDeleted'))
     togglePoolKeySelection(key.key_id, false)
     // 乐观更新：直接从本地列表移除，避免等待网络重载
     keyPage.value.keys = keyPage.value.keys.filter(k => k.key_id !== key.key_id)
@@ -2533,7 +2532,7 @@ async function handleDeleteKey(key: PoolKeyDetail) {
     }
     refreshOverviewInBackground()
   } catch (err) {
-    showError(parseApiError(err, '删除账号失败'))
+    showError(parseApiError(err, t('ui.failedToDeleteAccount')))
   } finally {
     deletingKeyId.value = null
   }
@@ -2555,13 +2554,13 @@ async function copyFullKey(key: PoolKeyDetail) {
     }
 
     if (!textToCopy) {
-      showError('未获取到可复制内容')
+      showError(t('ui.noContentAvailableToCopy'))
       return
     }
 
     await copyToClipboard(textToCopy)
   } catch (err) {
-    showError(parseApiError(err, '获取密钥失败'))
+    showError(parseApiError(err, t('ui.failedToRetrieveKey')))
   }
 }
 
@@ -2582,7 +2581,7 @@ async function downloadRefreshToken(key: PoolKeyDetail) {
     document.body.removeChild(a)
     URL.revokeObjectURL(url)
   } catch (err) {
-    showError(parseApiError(err, '导出失败'))
+    showError(parseApiError(err, t('ui.exportFailed')))
   }
 }
 
@@ -2620,7 +2619,7 @@ async function handleRefreshOAuth(key: PoolKeyDetail) {
       success(feedback.message)
     }
   } catch (err) {
-    showError(parseApiError(err, 'Token 刷新失败'))
+    showError(parseApiError(err, t('ui.failedToRefreshToken')))
     await Promise.all([loadKeys({ silent: true }), loadOverview({ silent: true })])
   } finally {
     refreshingOAuthKeyId.value = null
@@ -2656,16 +2655,16 @@ async function handleResetCycleStats(key: PoolKeyDetail) {
   if (resettingCycleKeyId.value || !canResetCycleStats(key)) return
 
   const confirmed = await confirm({
-    title: '重置周期统计',
+    get title() { return t('ui.resetCycleStatistics') },
     message: `确定要将账号 "${key.key_name || key.key_id.slice(0, 8)}" 的 5H / 周统计从当前时间重新开始计算吗？`,
-    confirmText: '重置',
+    get confirmText() { return t('ui.reset') },
   })
   if (!confirmed) return
 
   resettingCycleKeyId.value = key.key_id
   try {
     const result = await resetProviderKeyCycleStats(key.key_id)
-    success(result.message || '周期统计已重置')
+    success(result.message || t('ui.cycleStatisticsReset'))
     if (key.status_snapshot?.quota?.windows) {
       const resetAt = Number(result.reset_at)
       key.status_snapshot = {
@@ -2678,7 +2677,7 @@ async function handleResetCycleStats(key: PoolKeyDetail) {
     }
     await loadKeys({ silent: true })
   } catch (err) {
-    showError(parseApiError(err, '重置周期统计失败'))
+    showError(parseApiError(err, t('ui.failedToResetCycleStatistics')))
   } finally {
     resettingCycleKeyId.value = null
   }
@@ -2692,7 +2691,7 @@ async function toggleKeyActive(key: PoolKeyDetail) {
     await updateProviderKey(key.key_id, { is_active: nextStatus })
     applyPoolKeyActiveState(key, nextStatus)
     await Promise.all([loadKeys({ silent: true }), loadOverview({ silent: true })])
-    success(nextStatus ? '账号已启用' : '账号已停用')
+    success(nextStatus ? t('ui.accountEnabled') : t('ui.accountDisabled4a3a19a'))
   } catch (err) {
     showError(parseApiError(err))
   } finally {
@@ -2719,7 +2718,7 @@ async function ensureSelectedProviderDetail(): Promise<boolean> {
     await loadProviderData(providerId, { preserveOnError: true })
   }
   if (selectedProviderData.value?.id === providerId) return true
-  showWarning('Provider 详情尚未加载，无法编辑调度配置')
+  showWarning(t('ui.providerDetailsHaveNotLoadedSchedulingSettingsCannotBeEdited'))
   return false
 }
 
@@ -2782,7 +2781,7 @@ async function openProviderEditDialog(provider?: ProviderWithEndpointsSummary): 
     if (selectedProviderId.value !== providerId) return
     const fallbackProvider = provider ?? selectedProviderData.value
     if (!fallbackProvider) {
-      showError(parseApiError(err, '刷新提供商状态失败'))
+      showError(parseApiError(err, t('ui.failedToRefreshProviderStatus')))
       return
     }
     providerToEdit.value = fallbackProvider
@@ -2814,9 +2813,9 @@ async function toggleSelectedProviderStatus(provider?: ProviderWithEndpointsSumm
   const nextStatus = !current.is_active
   if (!nextStatus) {
     const confirmed = await confirm({
-      title: '禁用提供商',
+      get title() { return t('ui.disableProvider') },
       message: `禁用后该提供商（${current.name}）将不再参与调度，是否继续？`,
-      confirmText: '确认禁用',
+      get confirmText() { return t('ui.confirmDisabling') },
       variant: 'destructive',
     })
     if (!confirmed) return
@@ -2833,10 +2832,10 @@ async function toggleSelectedProviderStatus(provider?: ProviderWithEndpointsSumm
         selectedProviderData.value = updated
       }
     }
-    success(nextStatus ? '提供商已启用' : '提供商已禁用')
+    success(nextStatus ? t('ui.providerEnabled') : t('ui.providerDisabled'))
     await loadOverview({ silent: true })
   } catch (err) {
-    showError(parseApiError(err, nextStatus ? '启用提供商失败' : '禁用提供商失败'))
+    showError(parseApiError(err, nextStatus ? t('ui.failedToEnableProvider') : t('ui.failedToDisableProvider')))
   } finally {
     togglingProviderStatus.value = false
   }

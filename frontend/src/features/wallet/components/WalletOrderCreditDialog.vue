@@ -6,21 +6,21 @@
     <template #header>
       <div class="px-6 py-4 border-b border-border">
         <h3 class="text-lg font-semibold">
-          人工到账
+          {{ t('ui.manualCredit') }}
         </h3>
         <p class="text-xs text-muted-foreground mt-1">
-          订单: {{ order?.order_no || '-' }}
+          {{ t('ui.order43177a6') }} {{ order?.order_no || '-' }}
         </p>
       </div>
     </template>
     <div class="space-y-4">
       <div class="space-y-1.5">
-        <Label>网关订单号（可选）</Label>
+        <Label>{{ t('ui.gatewayOrderIdOptional') }}</Label>
         <Input v-model="form.gateway_order_id" />
       </div>
       <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <div class="space-y-1.5">
-          <Label>实付金额（可选）</Label>
+          <Label>{{ t('ui.amountPaidOptional') }}</Label>
           <Input
             v-model.number="form.pay_amount"
             type="number"
@@ -29,11 +29,11 @@
           />
         </div>
         <div class="space-y-1.5">
-          <Label>币种（可选）</Label>
+          <Label>{{ t('ui.currencyOptional') }}</Label>
           <Input v-model="form.pay_currency" />
         </div>
         <div class="space-y-1.5">
-          <Label>汇率（可选）</Label>
+          <Label>{{ t('ui.exchangeRateOptional') }}</Label>
           <Input
             v-model.number="form.exchange_rate"
             type="number"
@@ -48,19 +48,21 @@
         variant="outline"
         @click="$emit('close')"
       >
-        取消
+        {{ t('common.cancel') }}
       </Button>
       <Button
         :disabled="submitting"
         @click="submit"
       >
-        {{ submitting ? '提交中...' : '确认到账' }}
+        {{ submitting ? t('ui.submitting') : t('ui.confirmCredit') }}
       </Button>
     </template>
   </Dialog>
 </template>
 
 <script setup lang="ts">
+import { useI18n } from '@/i18n'
+
 import { reactive, watch } from 'vue'
 import { Button, Dialog, Input, Label } from '@/components/ui'
 import type { PaymentOrder } from '@/api/wallet'
@@ -83,6 +85,8 @@ const emit = defineEmits<{
   close: []
   submit: [payload: WalletOrderCreditPayload]
 }>()
+
+const { t } = useI18n()
 
 const form = reactive({
   gateway_order_id: '',
@@ -107,4 +111,5 @@ function submit() {
     exchange_rate: form.exchange_rate,
   })
 }
+
 </script>

@@ -1,3 +1,4 @@
+import { translate } from '@/i18n'
 import type {
   ImageOutputPriceRange,
   ImageOutputQualityPricing,
@@ -199,7 +200,7 @@ export function validatePricingTiers(tiers: PricingTier[], policy: PricingScopeP
     policy.terminalUpperBound === 'require-unbounded'
     && tiers[tiers.length - 1].up_to !== null
   ) {
-    return '最后一个阶梯必须是无上限的'
+    return translate('ui.theFinalPricingTierMustHaveNoUpperLimit')
   }
 
   let previousUpperBound = 0
