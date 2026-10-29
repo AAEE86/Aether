@@ -1066,12 +1066,11 @@ import {
 } from '@/components/ui'
 import { useToast } from '@/composables/useToast'
 import { useClipboard } from '@/composables/useClipboard'
-import { useCountdownTimer, getCodexResetCountdown } from '@/composables/useCountdownTimer'
+import { useCountdownTimer } from '@/composables/useCountdownTimer'
 import { useConfirm } from '@/composables/useConfirm'
 import { useRouteQuery } from '@/composables/useRouteQuery'
 import { useBatchSelection } from '@/composables/useBatchSelection'
 import { useI18n } from '@/i18n'
-import type { MessageKey } from '@/i18n/messages'
 import { parseApiError } from '@/utils/errorParser'
 import {
   getPoolOverview,
@@ -1102,7 +1101,6 @@ import type {
   PoolAdvancedConfig,
   ProviderWithEndpointsSummary,
 } from '@/api/endpoints/types/provider'
-import type { QuotaStatusSnapshot, QuotaWindowSnapshot } from '@/api/endpoints/types'
 import { getProvider, updateProvider } from '@/api/endpoints'
 import { useProxyNodesStore } from '@/stores/proxy-nodes'
 import PoolSchedulingDialog from '@/features/pool/components/PoolSchedulingDialog.vue'
@@ -1120,11 +1118,9 @@ import OAuthAccountDialog from '@/features/providers/components/OAuthAccountDial
 import ProviderFormDialog from '@/features/providers/components/ProviderFormDialog.vue'
 import ProxyNodeSelect from '@/features/providers/components/ProxyNodeSelect.vue'
 import {
-  buildPoolMobileTagItems,
   splitPoolMobileActions,
   type PoolMobileActionId,
   type PoolMobileTagItem,
-  type PoolMobileTagTone,
 } from '@/features/pool/utils/poolMobilePresentation'
 import {
   buildPoolManagementQueryPatch,
@@ -1145,7 +1141,40 @@ import {
 } from '@/features/pool/utils/poolStatsDisplay'
 import { resetCodexCycleUsageWindows } from '@/features/pool/utils/poolCycleStats'
 import { mergePoolKeyQuotaSnapshots } from '@/features/pool/utils/poolQuotaRefresh'
-import { resolveAntigravityQuotaGroupLabel } from '@/features/providers/utils/antigravityQuota'
+import {
+  getQuotaProgressLabel,
+  getQuotaProgressCountdown,
+  getQuotaProgressResetDisplayText,
+  getQuotaProgressMeterDisplayText,
+  getQuotaSnapshotProviderType,
+  formatQuotaValue,
+  resolvePoolKeyPlanType,
+  parseQuotaProgressItems,
+  getQuotaRemainingClassByRemaining,
+  getQuotaRemainingBarColorByRemaining,
+} from '@/features/pool/utils/poolKeyQuotaProgress'
+import type { QuotaProgressItem, QuotaProgressDisplayItem } from '@/features/pool/utils/poolKeyQuotaProgress'
+import {
+  getSchedulingBadgeLabel,
+  getSchedulingBadgeVariant,
+  getSchedulingTitle,
+  formatTTL,
+  getRowClass,
+  getMobileTagItems,
+  getMobileTagClass,
+  getVisibleOAuthState,
+  getOAuthRefreshButtonTitle,
+  getOAuthStatusTitle,
+  getQuotaTextClass,
+  formatPoolScore,
+  formatPoolScoreReason,
+  getPoolScoreHardStateLabel,
+  getPoolScoreProbeStatusLabel,
+  formatUnixSeconds,
+  formatRelativeTime,
+  formatPoolKeyImportedAt,
+} from '@/features/pool/utils/poolKeyStatus'
+import type { PoolStatusVariant } from '@/features/pool/utils/poolKeyStatus'
 import {
   clearPendingCodexResetCreditIdempotencyKey,
   clearPendingCodexResetCreditIdempotencyKeyForOutcome,
@@ -1159,7 +1188,6 @@ import {
   readPendingCodexResetCreditIdempotencyKey,
   rememberPendingCodexResetCreditIdempotencyKey,
 } from '@/features/providers/components/codex-reset-credit-display'
-import { getCodexQuotaWindowPresentation } from '@/features/providers/utils/codexQuotaWindow'
 import { getOAuthOrgBadge } from '@/features/providers/utils/oauthIdentity'
 import { formatOAuthPlanType, getOAuthPlanTypeClass } from '@/features/providers/utils/oauthPlanType'
 import { getOAuthRefreshFeedback } from '@/features/providers/utils/oauthRefreshFeedback'
@@ -1167,22 +1195,16 @@ import {
   canEditOAuthCredential,
   canExportOAuthCredential,
   canRefreshOAuthCredential,
-  getProviderAuthLabel,
   getProviderMaskedSecretLabel,
   isOAuthManagedCredential,
   isServiceAccountCredential,
   shouldShowOAuthRefreshControl,
 } from '@/features/providers/utils/providerKeyAuth'
 import {
-  getAccountStatusDisplay,
-  getAccountStatusTitle,
-  getOAuthRefreshButtonTitle as resolveOAuthRefreshButtonTitle,
   getOAuthStatusDisplayWithFallback,
-  getOAuthStatusTitle as resolveOAuthStatusTitle,
 } from '@/features/providers/utils/providerKeyStatus'
 import {
   getGeminiCliAccountCreditsText,
-  getLegacyAccountQuotaText,
   getQuotaDisplayText,
 } from '@/features/providers/utils/providerKeyQuota'
 
@@ -1192,8 +1214,6 @@ const ProviderDetailDrawer = defineAsyncComponent(loadProviderDetailDrawer)
 function prefetchProviderDetailDrawer(): void {
   void loadProviderDetailDrawer().catch(() => {})
 }
-
-type PoolKeyScore = NonNullable<PoolKeyDetail['pool_score']>
 
 const { success, error: showError, warning: showWarning } = useToast()
 const { legacyT, t } = useI18n()
@@ -1299,24 +1319,6 @@ const poolKeyStatusFilterOptions: Array<{ value: PoolManagementViewState['status
   { value: 'account_blocked', label: '账号异常' },
   { value: 'rate_limited', label: '速率受限' },
   { value: 'cost_exhausted', label: '超限' },
-]
-const poolScoreHardStateOptions = [
-  { value: 'all', label: '全部状态' },
-  { value: 'available', label: '可用' },
-  { value: 'unknown', label: '未知' },
-  { value: 'cooldown', label: '冷却' },
-  { value: 'quota_exhausted', label: '额度耗尽' },
-  { value: 'auth_invalid', label: '授权无效' },
-  { value: 'banned', label: '封禁' },
-  { value: 'inactive', label: '禁用' },
-]
-const poolScoreProbeStatusOptions = [
-  { value: 'all', label: '全部探测' },
-  { value: 'never', label: '未探测' },
-  { value: 'ok', label: '正常' },
-  { value: 'failed', label: '失败' },
-  { value: 'stale', label: '过期' },
-  { value: 'in_progress', label: '探测中' },
 ]
 
 async function loadOverview(options: { cacheTtlMs?: number, silent?: boolean } = {}) {
@@ -2007,27 +2009,6 @@ watch(
   },
   { immediate: true },
 )
-interface QuotaProgressItem {
-  label: string
-  remainingPercent: number
-  numericOnly?: boolean
-  sortOrder?: number
-  detail?: string
-  resetAtSeconds?: number | null
-  resetSeconds?: number | null
-  updatedAtSeconds?: number | null
-  allowDynamicReset?: boolean
-}
-
-interface QuotaProgressDisplayItem {
-  label: string
-  remainingPercent: number
-  resetText: string
-  meterText: string
-  barClass: string
-  meterClass: string
-  numericOnly?: boolean
-}
 
 type PoolKeyUiState = {
   rowClass: string
@@ -2055,7 +2036,7 @@ type PoolKeyUiState = {
 const quotaProgressMap = computed<Record<string, QuotaProgressItem[]>>(() => {
   const map: Record<string, QuotaProgressItem[]> = {}
   for (const key of keyPage.value.keys) {
-    map[key.key_id] = parseQuotaProgressItems(key)
+    map[key.key_id] = parseQuotaProgressItems(key, selectedProviderType.value, t)
   }
   return map
 })
@@ -2066,12 +2047,12 @@ const quotaProgressDisplayMap = computed<Record<string, QuotaProgressDisplayItem
     map[key.key_id] = (quotaProgressMap.value[key.key_id] || []).map(item => {
       // 倒计时归零表示窗口已越过重置时间点：按“已重置”展示 100%，
       // 不再显示重置前的旧用量文本，与后端读取口径、调度口径保持一致。
-      const expired = !item.numericOnly && getQuotaProgressCountdown(item)?.isExpired === true
+      const expired = !item.numericOnly && getQuotaProgressCountdown(item, countdownTick.value)?.isExpired === true
       const remainingPercent = expired ? 100 : item.remainingPercent
       return {
         label: getQuotaProgressLabel(item.label),
         remainingPercent,
-        resetText: getQuotaProgressResetDisplayText(item),
+        resetText: getQuotaProgressResetDisplayText(item, countdownTick.value),
         meterText: item.numericOnly
           ? item.detail || formatQuotaValue(remainingPercent)
           : getQuotaProgressMeterDisplayText(item, remainingPercent, expired),
@@ -2087,24 +2068,26 @@ const quotaProgressDisplayMap = computed<Record<string, QuotaProgressDisplayItem
 const keyUiStateMap = computed<Record<string, PoolKeyUiState>>(() => {
   const map: Record<string, PoolKeyUiState> = {}
 
+  const tick = countdownTick.value
+  const providerType = selectedProviderType.value
   for (const key of keyPage.value.keys) {
-    const visibleOAuthState = getVisibleOAuthState(key)
+    const visibleOAuthState = getVisibleOAuthState(key, tick)
     const oauthOrgBadge = getOAuthOrgBadge(key)
-    const accountQuotaText = getAccountQuotaText(key)
-    const quotaFallbackText = getQuotaFallbackText(key)
+    const accountQuotaText = getGeminiCliAccountCreditsText(key, providerType)
+    const quotaFallbackText = getQuotaDisplayText(key, providerType)
     const planType = resolvePoolKeyPlanType(key)
     const canRefreshToken = canRefreshOAuthCredential(key)
     const showOAuthRefreshControl = shouldShowOAuthRefreshControl(key, selectedProviderType.value)
 
     map[key.key_id] = {
-      rowClass: getRowClass(key),
-      schedulingBadgeLabel: getSchedulingBadgeLabel(key),
-      schedulingBadgeVariant: getSchedulingBadgeVariant(key),
-      schedulingTitle: getSchedulingTitle(key),
+      rowClass: getRowClass(key, tick),
+      schedulingBadgeLabel: getSchedulingBadgeLabel(key, tick),
+      schedulingBadgeVariant: getSchedulingBadgeVariant(key, tick),
+      schedulingTitle: getSchedulingTitle(key, tick),
       oauthOrgBadge,
       visibleOAuthState,
-      oauthStatusTitle: visibleOAuthState ? getOAuthStatusTitle(key) : '',
-      oauthRefreshButtonTitle: showOAuthRefreshControl ? getOAuthRefreshButtonTitle(key) : '',
+      oauthStatusTitle: visibleOAuthState ? getOAuthStatusTitle(key, tick) : '',
+      oauthRefreshButtonTitle: showOAuthRefreshControl ? getOAuthRefreshButtonTitle(key, tick) : '',
       showOAuthRefreshControl,
       canRefreshToken,
       planLabel: planType ? formatOAuthPlanType(planType) : '',
@@ -2117,7 +2100,7 @@ const keyUiStateMap = computed<Record<string, PoolKeyUiState>>(() => {
       importedAtRelative: formatPoolKeyImportedAt(key),
       lastUsedRelative: key.last_used_at ? formatRelativeTime(key.last_used_at) : '-',
       statsDisplay: buildPoolStatsDisplay(key, selectedProviderType.value, 'current_cycle'),
-      mobileTagItems: getMobileTagItems(key),
+      mobileTagItems: getMobileTagItems(key, tick),
       mobileActionIds: splitPoolMobileActions({
         canDownloadOrCopy: true,
         showRefreshToken: showOAuthRefreshControl,
@@ -2250,7 +2233,7 @@ function applyQuotaRefreshResultToCurrentPage(result: Awaited<ReturnType<typeof 
 }
 
 function getCodexResetCredits(key: PoolKeyDetail) {
-  if (getQuotaSnapshotProviderType(key) !== 'codex') return null
+  if (getQuotaSnapshotProviderType(key, selectedProviderType.value) !== 'codex') return null
 
   const snapshot = key.status_snapshot?.quota?.reset_credits
   const snapshotUpdatedAt = key.status_snapshot?.quota?.updated_at
@@ -2281,7 +2264,7 @@ function getPendingCodexResetCreditIdempotencyKey(key: PoolKeyDetail): string | 
 }
 
 function getClaudeCodeResetCredits(key: PoolKeyDetail) {
-  if (getQuotaSnapshotProviderType(key) !== 'claude_code') return null
+  if (getQuotaSnapshotProviderType(key, selectedProviderType.value) !== 'claude_code') return null
   return key.status_snapshot?.quota?.reset_credits
     ?? key.upstream_metadata?.claude_code?.reset_credits
     ?? null
@@ -2309,7 +2292,7 @@ function getCodexResetCreditItemTexts(key: PoolKeyDetail): string[] {
 }
 
 function canConsumeCodexResetCredit(key: PoolKeyDetail): boolean {
-  return getQuotaSnapshotProviderType(key) === 'codex'
+  return getQuotaSnapshotProviderType(key, selectedProviderType.value) === 'codex'
     && getCodexCredentialGeneration(key) !== undefined
     && (getPendingCodexResetCreditIdempotencyKey(key) !== null
       || (getCodexResetCreditAvailableCount(getCodexResetCredits(key)) ?? 0) > 0)
@@ -3188,1003 +3171,6 @@ async function handleAccountDialogSaved() {
   await Promise.all([loadKeys({ silent: true }), loadOverview({ silent: true })])
   // 导入账号后补一次静默额度刷新，避免新账号在列表里暂无额度信息
   await refreshCurrentPageQuotaInBackground({ silent: true, reloadAfter: 'silent' })
-}
-
-// --- Formatting ---
-const COOLDOWN_REASON_MAP: Record<string, string> = {
-  rate_limited_429: '429 限流',
-  forbidden_403: '403 禁止',
-  overloaded_529: '529 过载',
-  auth_failed_401: '401 认证失败',
-  payment_required_402: '402 欠费',
-  server_error_500: '500 错误',
-  request_timeout_408: '408 超时',
-  conflict_409: '409 冲突',
-  locked_423: '423 锁定',
-  too_early_425: '425 Too Early',
-  bad_gateway_502: '502 网关错误',
-  service_unavailable_503: '503 服务不可用',
-  gateway_timeout_504: '504 网关超时',
-}
-
-function formatCooldownReason(reason: string): string {
-  return COOLDOWN_REASON_MAP[reason] || reason
-}
-
-type PoolStatusVariant = 'default' | 'secondary' | 'destructive' | 'outline' | 'success' | 'warning' | 'dark'
-
-function isHealthDerivedSchedulingReason(reason: string | null | undefined): boolean {
-  const normalized = String(reason || '').trim().toLowerCase()
-  return normalized === 'health_low'
-    || normalized === 'health_degraded'
-    || normalized === 'health'
-    || normalized === 'circuit_open'
-    || normalized === 'circuit_breaker'
-}
-
-function isHealthDerivedSchedulingLabel(label: string | null | undefined): boolean {
-  const normalized = String(label || '').trim()
-  return normalized === '健康低'
-    || normalized === '健康度较低'
-    || normalized === '降级'
-    || normalized === '熔断'
-    || normalized === '熔断中'
-}
-
-function getVisibleSchedulingReason(key: PoolKeyDetail): string | null {
-  const reason = String(key.scheduling_reason || '').trim()
-  if (!reason || isHealthDerivedSchedulingReason(reason)) return null
-  return reason
-}
-
-function getVisibleSchedulingReasons(key: PoolKeyDetail) {
-  return (key.scheduling_reasons ?? []).filter((item) => {
-    const source = String(item.source || '').trim().toLowerCase()
-    return source !== 'health'
-      && !isHealthDerivedSchedulingReason(item.code)
-      && !isHealthDerivedSchedulingLabel(item.label)
-  })
-}
-
-function getSchedulingStatus(key: PoolKeyDetail): 'available' | 'degraded' | 'blocked' {
-  if (getAccountAlertLabel(key)) return 'blocked'
-  if (getBlockingOAuthStatusLabel(key)) return 'blocked'
-
-  const status = key.scheduling_status
-  if (
-    (status === 'available' || status === 'degraded' || status === 'blocked')
-    && !isHealthDerivedSchedulingReason(key.scheduling_reason)
-    && !isHealthDerivedSchedulingLabel(key.scheduling_label)
-  ) {
-    return status
-  }
-
-  if (!key.is_active) return 'blocked'
-  if (key.cooldown_reason) return 'degraded'
-  if (key.cost_limit != null && key.cost_limit > 0 && key.cost_window_usage >= key.cost_limit) return 'blocked'
-  return 'available'
-}
-
-function compactPoolStatusLabel(label: string | null | undefined): string | null {
-  const normalized = String(label || '').trim()
-  if (!normalized) return null
-
-  const mapped: Record<string, string> = {
-    'Token 失效': '已失效',
-    'Token 过期': '已过期',
-    Token失效: '已失效',
-    Token过期: '已过期',
-    账号已封禁: '账号封禁',
-    工作区已停用: '工作区停用',
-    账号访问受限: '访问受限',
-    健康度较低: '健康低',
-  }
-  const labelText = mapped[normalized] || normalized
-  return Array.from(labelText).slice(0, 5).join('')
-}
-
-function getOAuthStatusBadgeLabel(status: ReturnType<typeof getVisibleOAuthState>): string | null {
-  if (!status) return null
-  if (status.requiresReauth) return '续期失败'
-  if (status.isInvalid) return '已失效'
-  if (status.isExpired) return '已过期'
-  if (status.text === '未添加') return '未添加'
-  if (status.text === '有效期未知') return '未知'
-  if (status.isExpiringSoon) return '将过期'
-  return '有效'
-}
-
-function getBlockingOAuthStatusLabel(key: PoolKeyDetail): string | null {
-  const oauthState = getVisibleOAuthState(key)
-  if (!oauthState?.isInvalid && !oauthState?.isExpired) return null
-  return getOAuthStatusBadgeLabel(oauthState)
-}
-
-function isPoolKeyCostExhausted(key: PoolKeyDetail): boolean {
-  return key.cost_limit != null
-    && key.cost_limit > 0
-    && key.cost_window_usage >= key.cost_limit
-}
-
-function getSchedulingBadgeLabel(key: PoolKeyDetail): string {
-  const accountAlert = getAccountAlertLabel(key)
-  if (accountAlert) return compactPoolStatusLabel(accountAlert) || accountAlert
-  const oauthAlert = getBlockingOAuthStatusLabel(key)
-  if (oauthAlert) return oauthAlert
-
-  const rawLabel = String(key.scheduling_label || '').trim()
-  if (
-    rawLabel
-    && !isHealthDerivedSchedulingReason(key.scheduling_reason)
-    && !isHealthDerivedSchedulingLabel(rawLabel)
-  ) {
-    if ((rawLabel === '可用' || key.scheduling_reason === 'available') && isPoolKeyCostExhausted(key)) {
-      return '超限'
-    }
-    if (rawLabel === '禁用' || rawLabel === '停用') return '禁用'
-    return compactPoolStatusLabel(rawLabel) || rawLabel
-  }
-
-  if (!key.is_active) return '已禁用'
-  if (key.cooldown_reason) return '冷却中'
-  return '可用'
-}
-
-function getSchedulingBadgeVariant(key: PoolKeyDetail): PoolStatusVariant {
-  if (getAccountAlertLabel(key)) return 'destructive'
-  if (getBlockingOAuthStatusLabel(key)) return 'destructive'
-
-  const reason = getVisibleSchedulingReason(key)
-  if (reason === 'manual_disabled' || reason === 'inactive') return 'secondary'
-  if (reason === 'account_blocked' || reason === 'account_quota_exhausted' || reason === 'cost_exhausted') return 'destructive'
-  if (reason === 'cooldown') return 'warning'
-  if (reason === 'cost_soft' || reason === 'cost') return 'warning'
-  if (isPoolKeyCostExhausted(key)) return 'destructive'
-  if (reason === 'available') return 'default'
-  if (!reason && !key.is_active) return 'secondary'
-
-  const status = getSchedulingStatus(key)
-  if (status === 'blocked') return 'destructive'
-  if (status === 'degraded') return 'warning'
-  return 'default'
-}
-
-function getSchedulingTitle(key: PoolKeyDetail): string {
-  const accountAlertTitle = getAccountAlertTitle(key)
-  if (accountAlertTitle) return accountAlertTitle
-  if (getBlockingOAuthStatusLabel(key)) return getOAuthStatusTitle(key)
-
-  const reasons = getVisibleSchedulingReasons(key)
-  if (reasons.length > 0) {
-    return reasons.map((item) => {
-      const ttl = item.ttl_seconds && item.ttl_seconds > 0 ? ` (${formatTTL(item.ttl_seconds)})` : ''
-      const detail = item.detail ? ` - ${item.detail}` : ''
-      return `${item.label}${ttl}${detail}`
-    }).join('\n')
-  }
-
-  if (key.cooldown_reason) {
-    const ttl = key.cooldown_ttl_seconds ? ` (${formatTTL(key.cooldown_ttl_seconds)})` : ''
-    return `${formatCooldownReason(key.cooldown_reason)}${ttl}`
-  }
-  if (isPoolKeyCostExhausted(key)) return '超限'
-  return getSchedulingBadgeLabel(key)
-}
-
-function formatTTL(seconds: number): string {
-  if (seconds <= 0) return ''
-  const m = Math.floor(seconds / 60)
-  const s = seconds % 60
-  return m > 0 ? `${m}m ${s}s` : `${s}s`
-}
-
-function getRowClass(key: PoolKeyDetail): string {
-  const status = getSchedulingStatus(key)
-  if (!key.is_active || status === 'blocked') return 'bg-muted/50 opacity-60'
-  return ''
-}
-
-function getAuthTypeChipLabel(key: PoolKeyDetail): string {
-  return getProviderAuthLabel(key)
-}
-
-function getMobileOAuthTone(key: PoolKeyDetail): PoolMobileTagTone | null {
-  const oauthState = getVisibleOAuthState(key)
-  if (!oauthState) return null
-  if (oauthState.isInvalid || oauthState.isExpired) return 'danger'
-  if (oauthState.isExpiringSoon) return 'warning'
-  return 'muted'
-}
-
-function getMobileTagItems(key: PoolKeyDetail): PoolMobileTagItem[] {
-  const accountAlert = getAccountAlertLabel(key)
-  const oauthState = getVisibleOAuthState(key)
-  const orgBadge = getOAuthOrgBadge(key)
-  const planType = resolvePoolKeyPlanType(key)
-
-  return buildPoolMobileTagItems({
-    accountStatusLabel: compactPoolStatusLabel(accountAlert),
-    accountStatusTone: accountAlert ? 'danger' : null,
-    oauthStatusLabel: getOAuthStatusBadgeLabel(oauthState),
-    oauthStatusTone: getMobileOAuthTone(key),
-    priorityLabel: `P${key.internal_priority ?? 50}`,
-    authLabel: getAuthTypeChipLabel(key),
-    planLabel: planType ? formatOAuthPlanType(planType) : null,
-    orgLabel: orgBadge?.label ?? null,
-    proxyLabel: key.proxy?.node_id ? '独立代理' : null,
-  })
-}
-
-function getMobileTagClass(item: PoolMobileTagItem): string {
-  if (item.tone === 'danger') {
-    return 'border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300'
-  }
-  if (item.tone === 'warning') {
-    return 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300'
-  }
-  if (item.tone === 'accent') {
-    return 'border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-300'
-  }
-  if (item.tone === 'muted') {
-    return 'border-border/60 bg-background/70 text-muted-foreground'
-  }
-  return 'border-border/60 bg-background/80 text-foreground/80'
-}
-
-function getVisibleOAuthState(key: PoolKeyDetail) {
-  return getOAuthStatusDisplayWithFallback(key, countdownTick.value)
-}
-
-function getOAuthRefreshButtonTitle(key: PoolKeyDetail): string {
-  return resolveOAuthRefreshButtonTitle(key, countdownTick.value)
-}
-
-function getOAuthStatusTitle(key: PoolKeyDetail): string {
-  return resolveOAuthStatusTitle(key, countdownTick.value)
-}
-
-const _accountAlertCache = new WeakMap<PoolKeyDetail, string | null>()
-
-function getQuotaAlertSnapshotState(key: PoolKeyDetail): { label: string, title: string } | null {
-  const quota = getQuotaSnapshot(key)
-  if (!quota) return null
-
-  const code = String(quota.code || '').trim().toLowerCase()
-  if (!['banned', 'forbidden', 'quarantined', 'rate_limited', 'exhausted'].includes(code)) return null
-
-  let label = String(quota.label || '').trim()
-  if (!label) {
-    if (code === 'banned') label = '账号封禁'
-    else if (code === 'forbidden') label = '访问受限'
-    else if (code === 'quarantined') label = '账号隔离'
-    else if (code === 'rate_limited') label = '速率受限'
-    else label = '额度耗尽'
-  } else if (label === '账号已封禁' || label === '封禁') {
-    label = '账号封禁'
-  }
-
-  const reason = String(quota.reason || '').trim()
-  return {
-    label,
-    title: reason ? `${label}: ${reason}` : label,
-  }
-}
-
-function getAccountAlertLabel(key: PoolKeyDetail): string | null {
-  const cached = _accountAlertCache.get(key)
-  if (cached !== undefined) return cached
-
-  let result: string | null = getAccountStatusDisplay(key).label
-  const quotaAlert = getQuotaAlertSnapshotState(key)
-  if (!result && quotaAlert) result = quotaAlert.label
-  if (!result && !getQuotaSnapshot(key)) {
-    const quotaText = getLegacyAccountQuotaText(key)
-    if (quotaText === '账号已封禁' || quotaText === '封禁') result = '账号封禁'
-    else if (quotaText === '访问受限') result = '访问受限'
-  }
-
-  _accountAlertCache.set(key, result)
-  return result
-}
-
-function getAccountAlertTitle(key: PoolKeyDetail): string {
-  const label = getAccountAlertLabel(key)
-  if (!label) return ''
-
-  const accountTitle = getAccountStatusTitle(key)
-  if (accountTitle) return accountTitle
-
-  const quotaAlert = getQuotaAlertSnapshotState(key)
-  if (quotaAlert?.title) return quotaAlert.title
-
-  const quotaText = getLegacyAccountQuotaText(key)
-  if (quotaText) return `${label}: ${quotaText}`
-  return label
-}
-
-function normalizeQuotaLabel(label: string): string {
-  const normalized = label.trim()
-  if (!normalized) return '额度'
-  if (/spark\s*5h/i.test(normalized) || normalized.includes('Spark5H')) return 'Spark5H'
-  if (/spark/i.test(normalized) && normalized.includes('周')) return 'Spark周'
-  if (normalized.includes('5H')) return '5H'
-  if (normalized.includes('周')) return '周'
-  if (normalized.includes('月')) return '月'
-  if (normalized.includes('最低剩余')) return '最低'
-  if (normalized === '剩余' || normalized.includes('剩余')) return '剩余'
-  if (normalized === '额度') return '额度'
-  return normalized
-}
-
-function getQuotaProgressLabel(label: string): string {
-  if (label === '日') return '日'
-  if (label === '5H') return '5H'
-  if (label === '周') return '周'
-  if (label === '月') return '月'
-  if (label === '周额度') return '周'
-  if (label === '月额度') return '月'
-  if (label === '额度') return '额度'
-  if (label === 'Spark5H') return 'Spark5H'
-  if (label === 'Spark周') return 'Spark周'
-  if (label === '最低') return '最低'
-  if (label === '剩余') return '剩余'
-  return label
-}
-
-function getQuotaProgressCountdown(item: QuotaProgressItem) {
-  const staticResetLabels = ['日', '5H', '周', '月', '周额度', '月额度', '额度', 'Spark5H', 'Spark周', 'Spark月', 'Auto', 'Fast', 'Expert', 'Heavy', 'Grok 4.3', '生图']
-  if (!item.allowDynamicReset && !staticResetLabels.includes(item.label)) return null
-  if (item.resetAtSeconds == null && item.resetSeconds == null) return null
-  return getCodexResetCountdown(
-    item.resetAtSeconds,
-    item.resetSeconds,
-    item.updatedAtSeconds,
-    countdownTick.value,
-    item.remainingPercent
-  )
-}
-
-function getQuotaProgressCountdownText(item: QuotaProgressItem): string {
-  const status = getQuotaProgressCountdown(item)
-  if (!status) return ''
-  return status.isExpired ? '' : `${status.text} 后重置`
-}
-
-function formatCompactQuotaCountdownText(text: string): string {
-  const normalized = text.trim()
-  const dayMatch = normalized.match(/^(\d+)天\s+(.+?)(?:\s+后重置)?$/)
-  if (dayMatch) {
-    return `${dayMatch[1]}天 ${dayMatch[2]}`
-  }
-  return normalized.replace(/\s+后重置$/, '')
-}
-
-function shouldHideQuotaProgressDetailText(text: string | null | undefined): boolean {
-  return (text ?? '').trim().includes('已重置')
-}
-
-function getQuotaProgressResetDisplayText(item: QuotaProgressItem): string {
-  const countdownText = getQuotaProgressCountdownText(item)
-  if (countdownText) return formatCompactQuotaCountdownText(countdownText)
-  return ''
-}
-
-function getQuotaProgressMeterDisplayText(
-  item: QuotaProgressItem,
-  remainingPercent = item.remainingPercent,
-  suppressDetail = false,
-): string {
-  // 窗口已重置时忽略重置前的旧用量文本，直接显示归一化后的剩余百分比。
-  const detail = suppressDetail ? '' : (item.detail?.trim() || '')
-  if (!shouldHideQuotaProgressDetailText(detail) && detail) return detail
-  return `${remainingPercent.toFixed(1)}%`
-}
-
-function getQuotaFallbackText(key: PoolKeyDetail): string | null {
-  return getQuotaDisplayText(key, selectedProviderType.value)
-}
-
-function getAccountQuotaText(key: PoolKeyDetail): string | null {
-  return getGeminiCliAccountCreditsText(key, selectedProviderType.value)
-}
-
-
-
-function getQuotaLabelOrder(label: string): number {
-  if (label === 'Auto') return 0
-  if (label === 'Fast') return 1
-  if (label === 'Expert') return 2
-  if (label === 'Heavy') return 3
-  if (label === 'Grok 4.3') return 4
-  if (label === '日') return 5
-  if (label === '5H') return 6
-  if (label === '周') return 7
-  if (label === '月') return 8
-  if (label === 'Spark5H') return 9
-  if (label === 'Spark周') return 10
-  if (label === 'Spark月') return 11
-  if (label === 'Prompt') return 12
-  if (label === 'Flex') return 13
-  if (label === '剩余') return 14
-  if (label === '额度') return 14
-  if (label === '最低') return 15
-  if (label === '生图') return 16
-  if (label === '速率') return 17
-  if (label === '模型') return 18
-  return 20
-}
-
-function clampPercent(value: number): number {
-  if (!Number.isFinite(value)) return 0
-  if (value < 0) return 0
-  if (value > 100) return 100
-  return value
-}
-
-function normalizeUnixSeconds(raw: number | null | undefined): number | null {
-  const value = Number(raw ?? 0)
-  if (!Number.isFinite(value) || value <= 0) return null
-  if (value > 1_000_000_000_000) return Math.floor(value / 1000)
-  return Math.floor(value)
-}
-
-function normalizeRemainingSeconds(raw: number | null | undefined): number | null {
-  const value = Number(raw ?? NaN)
-  if (!Number.isFinite(value) || value < 0) return null
-  return Math.floor(value)
-}
-
-function getQuotaSnapshot(key: PoolKeyDetail): QuotaStatusSnapshot | null {
-  const quota = key.status_snapshot?.quota
-  if (!quota) return null
-  return quota
-}
-
-function getQuotaSnapshotProviderType(key: PoolKeyDetail): string {
-  const snapshotProviderType = String(getQuotaSnapshot(key)?.provider_type || '').trim().toLowerCase()
-  if (snapshotProviderType) return snapshotProviderType
-  return selectedProviderType.value
-}
-
-function getCodexQuotaSnapshot(key: PoolKeyDetail): QuotaStatusSnapshot | null {
-  const quota = getQuotaSnapshot(key)
-  if (!quota) return null
-  return getQuotaSnapshotProviderType(key) === 'codex' ? quota : null
-}
-
-function getQuotaSnapshotUpdatedAtSeconds(quota: QuotaStatusSnapshot | null | undefined): number | null {
-  return normalizeUnixSeconds(quota?.updated_at ?? quota?.observed_at ?? null)
-}
-
-function getQuotaSnapshotResetAtSeconds(quota: QuotaStatusSnapshot | null | undefined): number | null {
-  return normalizeUnixSeconds(quota?.reset_at ?? null)
-}
-
-function getQuotaSnapshotResetSeconds(quota: QuotaStatusSnapshot | null | undefined): number | null {
-  return normalizeRemainingSeconds(quota?.reset_seconds ?? null)
-}
-
-function getQuotaSnapshotWindow(
-  quota: QuotaStatusSnapshot | null | undefined,
-  code: string,
-): QuotaWindowSnapshot | null {
-  const windows = quota?.windows
-  if (!Array.isArray(windows)) return null
-
-  const normalizedCode = code.trim().toLowerCase()
-  return windows.find(window => String(window?.code || '').trim().toLowerCase() === normalizedCode) ?? null
-}
-
-function getQuotaSnapshotWindowsByScope(
-  quota: QuotaStatusSnapshot | null | undefined,
-  scope: string,
-): QuotaWindowSnapshot[] {
-  const windows = quota?.windows
-  if (!Array.isArray(windows)) return []
-
-  const normalizedScope = scope.trim().toLowerCase()
-  return windows.filter(window => String(window?.scope || '').trim().toLowerCase() === normalizedScope)
-}
-
-function getQuotaWindowUsedPercent(window: QuotaWindowSnapshot | null | undefined): number | null {
-  if (!window) return null
-  if (typeof window.used_ratio === 'number') {
-    return clampPercent(window.used_ratio * 100)
-  }
-  if (typeof window.remaining_ratio === 'number') {
-    return clampPercent((1 - window.remaining_ratio) * 100)
-  }
-  if (typeof window.limit_value === 'number' && window.limit_value > 0) {
-    if (typeof window.remaining_value === 'number') {
-      return clampPercent((1 - (window.remaining_value / window.limit_value)) * 100)
-    }
-    if (typeof window.used_value === 'number') {
-      return clampPercent((window.used_value / window.limit_value) * 100)
-    }
-  }
-  return null
-}
-
-function getQuotaWindowRemainingPercent(window: QuotaWindowSnapshot | null | undefined): number | null {
-  if (!window) return null
-  if (typeof window.remaining_ratio === 'number') {
-    return clampPercent(window.remaining_ratio * 100)
-  }
-  const usedPercent = getQuotaWindowUsedPercent(window)
-  return usedPercent == null ? null : clampPercent(100 - usedPercent)
-}
-
-function formatQuotaValue(value: number | null | undefined): string {
-  const normalized = Number(value)
-  if (!Number.isFinite(normalized)) return '0'
-  const rounded = Math.round(normalized)
-  if (Math.abs(normalized - rounded) < 1e-6) {
-    return String(rounded)
-  }
-  return normalized.toFixed(1)
-}
-
-function getQuotaWindowValueText(window: QuotaWindowSnapshot | null | undefined): string | undefined {
-  if (!window || typeof window.limit_value !== 'number' || window.limit_value <= 0) return undefined
-  if (typeof window.remaining_value === 'number') {
-    return `${formatQuotaValue(window.remaining_value)}/${formatQuotaValue(window.limit_value)}`
-  }
-  if (typeof window.used_value === 'number') {
-    return `${formatQuotaValue(Math.max(window.limit_value - window.used_value, 0))}/${formatQuotaValue(window.limit_value)}`
-  }
-  return undefined
-}
-
-function resolvePoolKeyPlanType(key: PoolKeyDetail): string | null {
-  const direct = key.oauth_plan_type?.trim()
-  if (direct) return direct
-  const quota = getQuotaSnapshot(key)
-  const quotaPlan = quota?.plan_type?.trim()
-  if (quotaPlan) return quotaPlan
-  const quotaPoolTier = quota?.pool_tier?.trim()
-  return quotaPoolTier || null
-}
-
-const GROK_QUOTA_MODE_LABELS: Record<string, string> = {
-  quota_auto: 'Auto',
-  auto: 'Auto',
-  quota_fast: 'Fast',
-  fast: 'Fast',
-  quota_expert: 'Expert',
-  expert: 'Expert',
-  quota_heavy: 'Heavy',
-  heavy: 'Heavy',
-  quota_grok_4_3: 'Grok 4.3',
-  'grok-420-computer-use-sa': 'Grok 4.3',
-}
-
-function getGrokQuotaWindowLabel(window: QuotaWindowSnapshot): string {
-  const code = String(window.code || '').trim().replace(/^model:/i, '')
-  const label = String(window.label || window.model || code).trim()
-  const normalized = (label || code).toLowerCase()
-  return GROK_QUOTA_MODE_LABELS[normalized] || GROK_QUOTA_MODE_LABELS[code.toLowerCase()] || label || code || '模式'
-}
-
-function getGeminiCliQuotaWindowLabel(window: QuotaWindowSnapshot): string {
-  const code = String(window.code || '').trim().replace(/^model:/i, '')
-  const label = String(window.label || window.model || code).trim()
-  return label || code || '模型'
-}
-
-function buildQuotaProgressItemsFromSnapshot(key: PoolKeyDetail): QuotaProgressItem[] {
-  const quota = getQuotaSnapshot(key)
-  if (!quota) return []
-
-  const providerType = getQuotaSnapshotProviderType(key)
-
-  if (providerType === 'codex') {
-    const quotaResetAtSeconds = getQuotaSnapshotResetAtSeconds(quota)
-    const quotaResetSeconds = getQuotaSnapshotResetSeconds(quota)
-    return (quota.windows ?? [])
-      .map((window): QuotaProgressItem | null => {
-        const presentation = getCodexQuotaWindowPresentation(window)
-        const remainingPercent = getQuotaWindowRemainingPercent(window)
-        if (!presentation || remainingPercent == null) return null
-        return {
-          label: presentation.label,
-          sortOrder: presentation.sortOrder,
-          remainingPercent,
-          resetAtSeconds: normalizeUnixSeconds(window.reset_at ?? quotaResetAtSeconds ?? null),
-          resetSeconds: normalizeRemainingSeconds(window.reset_seconds ?? quotaResetSeconds ?? null),
-          updatedAtSeconds: getQuotaSnapshotUpdatedAtSeconds(quota),
-          allowDynamicReset: true,
-        }
-      })
-      .filter((item): item is QuotaProgressItem => item != null)
-  }
-
-  if (providerType === 'kiro' || providerType === 'xai') {
-    const quotaResetAtSeconds = getQuotaSnapshotResetAtSeconds(quota)
-    const quotaResetSeconds = getQuotaSnapshotResetSeconds(quota)
-    const window = getQuotaSnapshotWindow(quota, 'usage')
-      ?? getQuotaSnapshotWindowsByScope(quota, 'account')[0]
-      ?? null
-    const remainingPercent = getQuotaWindowRemainingPercent(window)
-    if (remainingPercent == null) return []
-
-    const detail = typeof window?.used_value === 'number' && typeof window?.limit_value === 'number'
-      ? `${formatQuotaValue(window.used_value)}/${formatQuotaValue(window.limit_value)}`
-      : undefined
-
-    return [{
-      label: normalizeQuotaLabel(String(window?.label || '').trim() || '剩余'),
-      remainingPercent,
-      detail,
-      resetAtSeconds: normalizeUnixSeconds(window?.reset_at ?? quotaResetAtSeconds ?? null),
-      resetSeconds: normalizeRemainingSeconds(window?.reset_seconds ?? quotaResetSeconds ?? null),
-      updatedAtSeconds: getQuotaSnapshotUpdatedAtSeconds(quota),
-      allowDynamicReset: true,
-    }]
-  }
-
-  if (providerType === 'grok') {
-    const quotaResetAtSeconds = getQuotaSnapshotResetAtSeconds(quota)
-    const quotaResetSeconds = getQuotaSnapshotResetSeconds(quota)
-    const modelWindows = getQuotaSnapshotWindowsByScope(quota, 'model')
-    if (modelWindows.length > 0) {
-      return modelWindows
-        .map((window): QuotaProgressItem | null => {
-          const remainingPercent = getQuotaWindowRemainingPercent(window)
-          if (remainingPercent == null) return null
-          return {
-            label: getGrokQuotaWindowLabel(window),
-            remainingPercent,
-            detail: getQuotaWindowValueText(window),
-            resetAtSeconds: normalizeUnixSeconds(window?.reset_at ?? quotaResetAtSeconds ?? null),
-            resetSeconds: normalizeRemainingSeconds(window?.reset_seconds ?? quotaResetSeconds ?? null),
-            updatedAtSeconds: getQuotaSnapshotUpdatedAtSeconds(quota),
-          }
-        })
-        .filter((item): item is QuotaProgressItem => item != null)
-    }
-
-    const window = getQuotaSnapshotWindow(quota, 'usage')
-      ?? getQuotaSnapshotWindowsByScope(quota, 'account')[0]
-      ?? null
-    const remainingPercent = getQuotaWindowRemainingPercent(window)
-    if (remainingPercent == null) return []
-
-    return [{
-      label: '剩余',
-      remainingPercent,
-      detail: getQuotaWindowValueText(window),
-      resetAtSeconds: normalizeUnixSeconds(window?.reset_at ?? quotaResetAtSeconds ?? null),
-      resetSeconds: normalizeRemainingSeconds(window?.reset_seconds ?? quotaResetSeconds ?? null),
-      updatedAtSeconds: getQuotaSnapshotUpdatedAtSeconds(quota),
-    }]
-  }
-
-  if (providerType === 'windsurf') {
-    const items: QuotaProgressItem[] = []
-    for (const [label, code] of [
-      ['日', 'daily'],
-      ['周', 'weekly'],
-      ['Prompt', 'prompt'],
-      ['Flex', 'flex'],
-    ] as const) {
-      const window = getQuotaSnapshotWindow(quota, code)
-      const remainingPercent = getQuotaWindowRemainingPercent(window)
-      if (remainingPercent == null) continue
-      const detail = typeof window?.used_value === 'number' && typeof window?.limit_value === 'number'
-        ? `${formatQuotaValue(window.used_value)}/${formatQuotaValue(window.limit_value)}`
-        : typeof window?.remaining_value === 'number' && typeof window?.limit_value === 'number'
-          ? `剩余 ${formatQuotaValue(window.remaining_value)}/${formatQuotaValue(window.limit_value)}`
-          : undefined
-      items.push({
-        label,
-        remainingPercent,
-        detail,
-        resetAtSeconds: normalizeUnixSeconds(window?.reset_at ?? null),
-        resetSeconds: normalizeRemainingSeconds(window?.reset_seconds ?? null),
-        updatedAtSeconds: getQuotaSnapshotUpdatedAtSeconds(quota),
-      })
-    }
-
-    const rateLimitWindow = getQuotaSnapshotWindow(quota, 'rate_limit')
-    if (rateLimitWindow) {
-      items.push({
-        label: '速率',
-        remainingPercent: rateLimitWindow.is_exhausted ? 0 : 100,
-        resetAtSeconds: normalizeUnixSeconds(rateLimitWindow.reset_at ?? null),
-        resetSeconds: normalizeRemainingSeconds(rateLimitWindow.reset_seconds ?? null),
-        updatedAtSeconds: getQuotaSnapshotUpdatedAtSeconds(quota),
-      })
-    }
-
-    if (typeof quota.allowed_models_count === 'number' && Number.isFinite(quota.allowed_models_count)) {
-      items.push({
-        label: '模型',
-        remainingPercent: 100,
-        detail: `${quota.allowed_models_count} 个`,
-        resetAtSeconds: null,
-        resetSeconds: null,
-        updatedAtSeconds: getQuotaSnapshotUpdatedAtSeconds(quota),
-      })
-    }
-
-    return items
-  }
-
-  if (providerType === 'antigravity') {
-    const windows = getQuotaSnapshotWindowsByScope(quota, 'quota_group')
-    if (windows.length === 0) return []
-    return windows
-      .map((window, index): QuotaProgressItem | null => {
-        const remainingPercent = getQuotaWindowRemainingPercent(window)
-        if (remainingPercent == null) return null
-        const label = resolveAntigravityQuotaGroupLabel(window, t)
-        if (!label) return null
-        return {
-          label,
-          sortOrder: index,
-          remainingPercent,
-          resetAtSeconds: normalizeUnixSeconds(window.reset_at ?? quota.reset_at ?? null),
-          resetSeconds: normalizeRemainingSeconds(window.reset_seconds ?? quota.reset_seconds ?? null),
-          updatedAtSeconds: getQuotaSnapshotUpdatedAtSeconds(quota),
-          allowDynamicReset: true,
-        }
-      })
-      .filter((item): item is QuotaProgressItem => item != null)
-  }
-
-  if (providerType === 'claude_code') {
-    const quotaResetAtSeconds = getQuotaSnapshotResetAtSeconds(quota)
-    const quotaResetSeconds = getQuotaSnapshotResetSeconds(quota)
-    const windowPresentations: Record<string, { labelKey: MessageKey, sortOrder: number }> = {
-      '5h': { labelKey: 'poolQuota.claudeCode.window5h', sortOrder: 0 },
-      weekly: { labelKey: 'poolQuota.claudeCode.weekly', sortOrder: 1 },
-      weekly_sonnet: { labelKey: 'poolQuota.claudeCode.weeklySonnet', sortOrder: 2 },
-      weekly_fable: { labelKey: 'poolQuota.claudeCode.weeklyFable', sortOrder: 3 },
-    }
-    return (quota.windows ?? [])
-      .map((window): QuotaProgressItem | null => {
-        const remainingPercent = getQuotaWindowRemainingPercent(window)
-        if (remainingPercent == null) return null
-        const presentation = windowPresentations[String(window.code || '')]
-        return {
-          label: t(presentation?.labelKey ?? 'poolQuota.claudeCode.unknownWindow'),
-          sortOrder: presentation?.sortOrder ?? 9,
-          remainingPercent,
-          resetAtSeconds: normalizeUnixSeconds(window.reset_at ?? quotaResetAtSeconds ?? null),
-          resetSeconds: normalizeRemainingSeconds(window.reset_seconds ?? quotaResetSeconds ?? null),
-          updatedAtSeconds: getQuotaSnapshotUpdatedAtSeconds(quota),
-          allowDynamicReset: true,
-        }
-      })
-      .filter((item): item is QuotaProgressItem => item != null)
-  }
-
-  if (providerType === 'gemini_cli') {
-    const windows = getQuotaSnapshotWindowsByScope(quota, 'model')
-    if (windows.length === 0) return []
-
-    const quotaResetAtSeconds = getQuotaSnapshotResetAtSeconds(quota)
-    const quotaResetSeconds = getQuotaSnapshotResetSeconds(quota)
-    return windows
-      .map((window): QuotaProgressItem | null => {
-        const remainingPercent = getQuotaWindowRemainingPercent(window)
-          ?? (window?.is_exhausted === true ? 0 : null)
-        if (remainingPercent == null) return null
-        return {
-          label: getGeminiCliQuotaWindowLabel(window),
-          remainingPercent,
-          detail: getQuotaWindowValueText(window),
-          resetAtSeconds: normalizeUnixSeconds(window?.reset_at ?? quotaResetAtSeconds ?? null),
-          resetSeconds: normalizeRemainingSeconds(window?.reset_seconds ?? quotaResetSeconds ?? null),
-          updatedAtSeconds: getQuotaSnapshotUpdatedAtSeconds(quota),
-          allowDynamicReset: true,
-        }
-      })
-      .filter((item): item is QuotaProgressItem => item != null)
-  }
-
-  if (providerType === 'chatgpt_web') {
-    const window = getQuotaSnapshotWindow(quota, 'image_gen')
-      ?? getQuotaSnapshotWindowsByScope(quota, 'account')[0]
-      ?? null
-    const remainingPercent = getQuotaWindowRemainingPercent(window)
-    if (remainingPercent == null) return []
-
-    const remainingValue = typeof window?.remaining_value === 'number' ? window.remaining_value : null
-    const limitValue = typeof window?.limit_value === 'number' ? window.limit_value : null
-    const usedValue = typeof window?.used_value === 'number' ? window.used_value : null
-    const detail = remainingValue != null && limitValue != null
-      ? `${formatQuotaValue(remainingValue)}/${formatQuotaValue(limitValue)}`
-      : usedValue != null && limitValue != null
-        ? `${formatQuotaValue(Math.max(limitValue - usedValue, 0))}/${formatQuotaValue(limitValue)}`
-        : remainingValue != null
-          ? `剩余 ${formatQuotaValue(remainingValue)}`
-          : undefined
-
-    return [{
-      label: '生图',
-      remainingPercent,
-      detail,
-      resetAtSeconds: normalizeUnixSeconds(window?.reset_at ?? null),
-      resetSeconds: normalizeRemainingSeconds(window?.reset_seconds ?? null),
-      updatedAtSeconds: getQuotaSnapshotUpdatedAtSeconds(quota),
-    }]
-  }
-
-  return []
-}
-
-function resolveCodexQuotaCountdown(
-  key: PoolKeyDetail,
-  label: string
-): Pick<QuotaProgressItem, 'resetAtSeconds' | 'resetSeconds' | 'updatedAtSeconds'> | null {
-  const codexWindowCodeByLabel: Record<string, string> = {
-    '5H': '5h',
-    '周': 'weekly',
-    Spark5H: 'spark_5h',
-    Spark周: 'spark_weekly',
-  }
-  const windowCode = codexWindowCodeByLabel[label]
-  if (!windowCode) return null
-
-  const codexSnapshot = getCodexQuotaSnapshot(key)
-  const snapshotWindow = getQuotaSnapshotWindow(codexSnapshot, windowCode)
-  if (!snapshotWindow) return null
-
-  const resetAtSeconds = normalizeUnixSeconds(snapshotWindow.reset_at ?? null)
-  const resetSeconds = normalizeRemainingSeconds(snapshotWindow.reset_seconds ?? null)
-  const updatedAtSeconds = getQuotaSnapshotUpdatedAtSeconds(codexSnapshot)
-
-  if (resetAtSeconds == null && resetSeconds == null) return null
-  return { resetAtSeconds, resetSeconds, updatedAtSeconds }
-}
-
-function parseQuotaResetRemainingSeconds(detail: string | undefined): number | null {
-  if (!detail) return null
-  const text = detail.replace(/\s+/g, '')
-
-  if (text.includes('已重置')) return 0
-  if (text.includes('即将重置')) return 1
-  if (!text.includes('后重置')) return null
-
-  const dayMatch = text.match(/(\d+)天/)
-  const hourMatch = text.match(/(\d+)小时/)
-  const minuteMatch = text.match(/(\d+)分钟/)
-  const secondMatch = text.match(/(\d+)秒/)
-
-  const days = dayMatch ? Number(dayMatch[1]) : 0
-  const hours = hourMatch ? Number(hourMatch[1]) : 0
-  const minutes = minuteMatch ? Number(minuteMatch[1]) : 0
-  const seconds = secondMatch ? Number(secondMatch[1]) : 0
-  const total = days * 86400 + hours * 3600 + minutes * 60 + seconds
-
-  if (total <= 0) return 1
-  return total
-}
-
-function parseQuotaProgressItems(key: PoolKeyDetail): QuotaProgressItem[] {
-  const snapshotItems = buildQuotaProgressItemsFromSnapshot(key)
-  if (snapshotItems.length > 0) {
-    return snapshotItems.sort((a, b) => {
-      const orderDiff = (a.sortOrder ?? getQuotaLabelOrder(a.label)) - (b.sortOrder ?? getQuotaLabelOrder(b.label))
-      if (orderDiff !== 0) return orderDiff
-      return a.label.localeCompare(b.label, 'zh-Hans-CN')
-    })
-  }
-
-  if (getQuotaSnapshot(key)) return []
-
-  const quotaText = getLegacyAccountQuotaText(key)
-  if (!quotaText) return []
-
-  const segments = quotaText
-    .split('|')
-    .map(s => s.trim())
-    .filter(Boolean)
-
-  const items: QuotaProgressItem[] = []
-  for (const segment of segments) {
-    const match = segment.match(/^(.*?)(-?\d+(?:\.\d+)?)%\s*(.*)$/)
-    if (!match) continue
-
-    const [, rawLabel, rawPercent, rawTail] = match
-    const remainingPercent = clampPercent(Number(rawPercent))
-    const label = normalizeQuotaLabel(rawLabel)
-    const detail = rawTail.trim().replace(/^[()]+|[()]+$/g, '').trim()
-    const codexCountdown = resolveCodexQuotaCountdown(key, label)
-    let resetAtSeconds = codexCountdown?.resetAtSeconds ?? null
-    let resetSeconds = codexCountdown?.resetSeconds ?? null
-    let updatedAtSeconds = codexCountdown?.updatedAtSeconds ?? null
-
-    if (resetAtSeconds == null && resetSeconds == null) {
-      const resetRemainingSeconds = parseQuotaResetRemainingSeconds(detail || undefined)
-      resetAtSeconds = resetRemainingSeconds == null
-        ? null
-        : Math.floor(Date.now() / 1000) + resetRemainingSeconds
-      resetSeconds = null
-      updatedAtSeconds = null
-    }
-
-    items.push({
-      label,
-      remainingPercent,
-      detail: detail || undefined,
-      resetAtSeconds,
-      resetSeconds,
-      updatedAtSeconds,
-    })
-  }
-
-  return items.sort((a, b) => {
-    const orderDiff = getQuotaLabelOrder(a.label) - getQuotaLabelOrder(b.label)
-    if (orderDiff !== 0) return orderDiff
-    return a.label.localeCompare(b.label, 'zh-Hans-CN')
-  })
-}
-
-function getQuotaRemainingClassByRemaining(remaining: number): string {
-  if (remaining <= 10) return 'text-red-600 dark:text-red-400'
-  if (remaining <= 30) return 'text-yellow-600 dark:text-yellow-400'
-  return 'text-green-600 dark:text-green-400'
-}
-
-function getQuotaRemainingBarColorByRemaining(remaining: number): string {
-  if (remaining <= 10) return 'bg-red-500 dark:bg-red-400'
-  if (remaining <= 30) return 'bg-yellow-500 dark:bg-yellow-400'
-  return 'bg-green-500 dark:bg-green-400'
-}
-
-function getQuotaTextClass(quotaText: string): string {
-  if (quotaText.includes('封禁') || quotaText.includes('受限')) {
-    return 'text-[11px] text-destructive leading-4'
-  }
-  return 'text-[11px] text-foreground/90 leading-4'
-}
-
-function formatPoolScore(value: number | null | undefined): string {
-  const n = Number(value)
-  if (!Number.isFinite(n)) return '-'
-  return n.toFixed(3)
-}
-
-function formatPoolScoreReason(value: PoolKeyScore['score_reason'] | null | undefined): string {
-  if (!value) return '暂无计算结果'
-  try {
-    return JSON.stringify(value, null, 2)
-  } catch {
-    return String(value)
-  }
-}
-
-function getPoolScoreHardStateLabel(value: PoolKeyScore['hard_state'] | null | undefined): string {
-  if (!value) return '-'
-  return poolScoreHardStateOptions.find(item => item.value === value)?.label || value
-}
-
-function getPoolScoreProbeStatusLabel(value: PoolKeyScore['probe_status'] | null | undefined): string {
-  if (!value) return '-'
-  return poolScoreProbeStatusOptions.find(item => item.value === value)?.label || value
-}
-
-function formatUnixSeconds(seconds: number | null | undefined): string {
-  const raw = Number(seconds ?? 0)
-  if (!Number.isFinite(raw) || raw <= 0) return '-'
-  return formatRelativeTime(new Date(raw * 1000).toISOString())
-}
-
-function formatRelativeTime(isoStr: string): string {
-  const date = new Date(isoStr)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  const M = pad(date.getMonth() + 1)
-  const D = pad(date.getDate())
-  const h = pad(date.getHours())
-  const m = pad(date.getMinutes())
-  return `${M}-${D} ${h}:${m}`
-}
-
-function formatPoolKeyImportedAt(key: PoolKeyDetail): string {
-  const value = key.imported_at || key.created_at
-  return value ? formatRelativeTime(value) : '-'
 }
 
 // --- Init ---
