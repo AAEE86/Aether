@@ -120,551 +120,21 @@
           :inert="mode !== 'oauth' ? true : undefined"
           :aria-hidden="mode !== 'oauth'"
         >
-          <!-- Windsurf: 浏览器 session/poll 授权 -->
-          <template v-if="isWindsurfProvider">
-            <div class="space-y-4">
-              <div class="grid grid-cols-3 gap-1.5">
-                <button
-                  v-for="opt in ([
-                    { key: 'default', label: '默认' },
-                    { key: 'google', label: 'Google' },
-                    { key: 'github', label: 'GitHub' },
-                  ] as const)"
-                  :key="opt.key"
-                  class="h-8 text-xs font-medium rounded-md border transition-colors"
-                  :class="device.auth_type === opt.key
-                    ? 'border-primary bg-primary/5 text-foreground'
-                    : 'border-border text-muted-foreground hover:text-foreground hover:border-foreground/20'"
-                  @click="selectWindsurfLoginOption(opt.key)"
-                >
-                  {{ legacyT(opt.label) }}
-                </button>
-              </div>
-
-              <div
-                v-if="device.status === 'error' || device.status === 'expired'"
-                class="rounded-xl border border-destructive/20 bg-destructive/5 p-5"
-              >
-                <div class="flex flex-col items-center text-center space-y-3">
-                  <div class="w-10 h-10 rounded-full bg-destructive/10 flex items-center justify-center">
-                    <AlertCircle class="w-5 h-5 text-destructive" />
-                  </div>
-                  <div class="space-y-1">
-                    <p class="text-sm font-medium text-destructive">
-                      {{ legacyT(device.status === 'expired' ? '授权已过期' : '授权失败') }}
-                    </p>
-                    <p class="text-xs text-muted-foreground">
-                      {{ legacyT(device.error || '请重试') }}
-                    </p>
-                  </div>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    @click="resetDevice"
-                  >
-                    {{ legacyT('重新开始') }}
-                  </Button>
-                </div>
-              </div>
-
-              <div
-                v-else-if="device.starting && !device.session_id"
-                class="flex items-center justify-center py-12"
-              >
-                <div class="text-center">
-                  <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-primary mx-auto mb-3" />
-                  <p class="text-xs text-muted-foreground">
-                    {{ legacyT('正在准备登录...') }}
-                  </p>
-                </div>
-              </div>
-
-              <div
-                v-else
-                class="space-y-4"
-              >
-                <div class="space-y-2">
-                  <div class="flex items-center gap-2">
-                    <span class="flex items-center justify-center w-4 h-4 rounded-full bg-primary/10 text-primary text-[10px] font-semibold shrink-0">1</span>
-                    <span class="text-xs font-medium">{{ legacyT('前往登录') }}</span>
-                  </div>
-                  <div class="flex gap-2 pl-6">
-                    <Button
-                      size="sm"
-                      :disabled="device.starting || device.completing || !device.verification_uri_complete"
-                      @click="openDeviceVerificationUrl"
-                    >
-                      <ExternalLink class="w-3 h-3 mr-1" />
-                      {{ legacyT('打开') }}
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      :disabled="device.starting || device.completing || !device.verification_uri_complete"
-                      @click="copyToClipboard(device.verification_uri_complete)"
-                    >
-                      <Copy class="w-3 h-3 mr-1" />
-                      {{ legacyT('复制') }}
-                    </Button>
-                    <Button
-                      v-if="!device.session_id"
-                      size="sm"
-                      variant="outline"
-                      :disabled="device.starting"
-                      @click="startDeviceAuth"
-                    >
-                      {{ legacyT('开始') }}
-                    </Button>
-                  </div>
-                </div>
-
-                <div class="space-y-2">
-                  <div class="flex items-center gap-2">
-                    <span class="flex items-center justify-center w-4 h-4 rounded-full bg-primary/10 text-primary text-[10px] font-semibold shrink-0">2</span>
-                    <span class="text-xs font-medium">{{ legacyT('粘贴回调 URL 或 token') }}</span>
-                  </div>
-                  <div class="pl-6">
-                    <Textarea
-                      v-model="device.callback_url"
-                      :disabled="device.completing"
-                      :placeholder="deviceCallbackPlaceholder"
-                      class="min-h-[150px] text-xs font-mono break-all !rounded-xl"
-                      spellcheck="false"
-                    />
-                  </div>
-                  <div
-                    v-if="device.session_id && device.status === 'pending'"
-                    class="pl-6 flex items-center gap-1.5 text-[11px] text-muted-foreground"
-                  >
-                    <div class="animate-spin rounded-full h-3 w-3 border-[1.5px] border-primary/30 border-t-primary" />
-                    <span>{{ sessionRemainingText }}</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </template>
-
-          <!-- xAI: 设备授权 -->
-          <template v-else-if="isXaiProvider">
-            <div class="space-y-3">
-              <div class="h-[265px]">
-                <div
-                  v-if="device.status === 'error' || device.status === 'expired'"
-                  class="rounded-xl border border-destructive/20 bg-destructive/5 p-5"
-                >
-                  <div class="flex flex-col items-center text-center space-y-3">
-                    <div class="w-10 h-10 rounded-full bg-destructive/10 flex items-center justify-center">
-                      <AlertCircle class="w-5 h-5 text-destructive" />
-                    </div>
-                    <div class="space-y-1">
-                      <p class="text-sm font-medium text-destructive">
-                        {{ legacyT(device.status === 'expired' ? '授权已过期' : '授权失败') }}
-                      </p>
-                      <p class="text-xs text-muted-foreground">
-                        {{ legacyT(device.error || '请重试') }}
-                      </p>
-                    </div>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      @click="resetDevice"
-                    >
-                      {{ legacyT('重新开始') }}
-                    </Button>
-                  </div>
-                </div>
-
-                <div
-                  v-else-if="device.starting && !device.session_id"
-                  class="flex items-center justify-center py-12"
-                >
-                  <div class="text-center">
-                    <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-primary mx-auto mb-3" />
-                    <p class="text-xs text-muted-foreground">
-                      {{ legacyT('正在准备设备授权...') }}
-                    </p>
-                  </div>
-                </div>
-
-                <div
-                  v-else-if="device.session_id && device.status === 'pending'"
-                  class="rounded-xl border border-border bg-muted/20 p-5"
-                >
-                  <div class="flex flex-col items-center text-center space-y-4">
-                    <div class="relative">
-                      <div class="absolute inset-0 rounded-full bg-primary/20 animate-ping" />
-                      <div class="relative w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
-                        <ExternalLink class="w-5 h-5 text-primary" />
-                      </div>
-                    </div>
-
-                    <div class="space-y-1">
-                      <p class="text-sm font-medium">
-                        {{ legacyT('在浏览器中输入设备码完成授权') }}
-                      </p>
-                      <p class="text-xs text-muted-foreground">
-                        {{ legacyT('授权完成后此页面将自动更新') }}
-                      </p>
-                    </div>
-
-                    <div
-                      v-if="device.user_code"
-                      class="flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2"
-                    >
-                      <span class="text-lg font-mono font-bold tracking-[0.2em]">{{ device.user_code }}</span>
-                      <button
-                        class="p-1 rounded hover:bg-muted transition-colors"
-                        :title="legacyT('复制设备码')"
-                        @click="copyToClipboard(device.user_code)"
-                      >
-                        <Copy class="w-3.5 h-3.5 text-muted-foreground" />
-                      </button>
-                    </div>
-
-                    <div class="flex items-center gap-1.5 text-xs text-muted-foreground">
-                      <div class="animate-spin rounded-full h-3 w-3 border-[1.5px] border-primary/30 border-t-primary" />
-                      <span>{{ remainingText }}</span>
-                    </div>
-
-                    <div class="flex gap-2 w-full">
-                      <Button
-                        class="flex-1"
-                        size="sm"
-                        :disabled="!device.verification_uri_complete && !device.verification_uri"
-                        @click="openDeviceVerificationUrl"
-                      >
-                        <ExternalLink class="w-3.5 h-3.5 mr-1.5" />
-                        {{ legacyT('打开授权页面') }}
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        :disabled="!device.verification_uri_complete && !device.verification_uri"
-                        @click="copyToClipboard(device.verification_uri_complete || device.verification_uri)"
-                      >
-                        <Copy class="w-3.5 h-3.5" />
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-
-                <div
-                  v-else
-                  class="flex h-full flex-col items-center justify-center gap-3"
-                >
-                  <p class="text-xs text-muted-foreground text-center">
-                    {{ legacyT('使用 xAI 设备授权登录 Grok CLI，或改为导入 API Key / Refresh Token。') }}
-                  </p>
-                  <Button
-                    class="w-full"
-                    :disabled="device.starting"
-                    @click="startDeviceAuth"
-                  >
-                    {{ device.starting ? legacyT('正在准备授权...') : legacyT('开始授权') }}
-                  </Button>
-                </div>
-              </div>
-            </div>
-          </template>
-
-          <!-- Kiro: 设备授权模式 -->
-          <template v-else-if="isKiroProvider">
-            <div class="space-y-3">
-              <!-- 授权类型切换 -->
-              <div class="grid grid-cols-2 gap-1.5">
-                <button
-                  v-for="opt in ([
-                    { key: 'google', label: 'Google' },
-                    { key: 'github', label: 'GitHub' },
-                    { key: 'builder_id', label: 'Builder ID' },
-                    { key: 'identity_center', label: 'Identity Center' },
-                  ] as const)"
-                  :key="opt.key"
-                  class="h-8 text-xs font-medium rounded-md border transition-colors disabled:opacity-60"
-                  :class="device.auth_type === opt.key
-                    ? 'border-primary bg-primary/5 text-foreground'
-                    : 'border-border text-muted-foreground hover:text-foreground hover:border-foreground/20'"
-                  :disabled="isKiroDeviceAuthOptionDisabled(opt.key)"
-                  @click="selectDeviceAuthType(opt.key)"
-                >
-                  {{ opt.label }}
-                </button>
-              </div>
-
-              <div class="h-[265px]">
-                <!-- 错误/过期 -->
-                <div
-                  v-if="device.status === 'error' || device.status === 'expired'"
-                  class="rounded-xl border border-destructive/20 bg-destructive/5 p-5"
-                >
-                  <div class="flex flex-col items-center text-center space-y-3">
-                    <div class="w-10 h-10 rounded-full bg-destructive/10 flex items-center justify-center">
-                      <AlertCircle class="w-5 h-5 text-destructive" />
-                    </div>
-                    <div class="space-y-1">
-                      <p class="text-sm font-medium text-destructive">
-                        {{ legacyT(device.status === 'expired' ? '授权已过期' : '授权失败') }}
-                      </p>
-                      <p class="text-xs text-muted-foreground">
-                        {{ legacyT(device.error || '请重试') }}
-                      </p>
-                    </div>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      @click="resetDevice"
-                    >
-                      {{ legacyT('重新开始') }}
-                    </Button>
-                  </div>
-                </div>
-
-                <!-- Builder ID / Identity Center: 发起中 -->
-                <div
-                  v-else-if="device.starting && !isSocialDeviceAuth"
-                  class="flex items-center justify-center py-12"
-                >
-                  <div class="text-center">
-                    <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-primary mx-auto mb-3" />
-                    <p class="text-xs text-muted-foreground">
-                      {{ legacyT('正在注册设备...') }}
-                    </p>
-                  </div>
-                </div>
-
-                <!-- Google / GitHub: 粘贴回调 URL -->
-                <div
-                  v-else-if="isSocialDeviceAuth"
-                  class="flex h-full flex-col gap-5 pt-1"
-                >
-                  <div class="space-y-2 shrink-0">
-                    <div class="flex items-center gap-2">
-                      <span class="flex items-center justify-center w-4 h-4 rounded-full bg-primary/10 text-primary text-[10px] font-semibold shrink-0">1</span>
-                      <span class="text-xs font-medium">{{ legacyT('前往授权') }}</span>
-                    </div>
-                    <div class="flex gap-2 pl-6">
-                      <Button
-                        size="sm"
-                        :disabled="device.starting || device.completing || !device.verification_uri_complete"
-                        @click="openDeviceVerificationUrl"
-                      >
-                        <ExternalLink class="w-3 h-3 mr-1" />
-                        {{ legacyT('打开') }}
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        :disabled="device.starting || device.completing || !device.verification_uri_complete"
-                        @click="copyToClipboard(device.verification_uri_complete)"
-                      >
-                        <Copy class="w-3 h-3 mr-1" />
-                        {{ legacyT('复制') }}
-                      </Button>
-                    </div>
-                  </div>
-
-                  <div class="flex min-h-0 flex-1 flex-col gap-2">
-                    <div class="flex items-center gap-2">
-                      <span class="flex items-center justify-center w-4 h-4 rounded-full bg-primary/10 text-primary text-[10px] font-semibold shrink-0">2</span>
-                      <span class="text-xs font-medium">{{ legacyT('粘贴回调 URL') }}</span>
-                    </div>
-                    <div class="min-h-0 flex-1 pl-6">
-                      <Textarea
-                        v-model="device.callback_url"
-                        :disabled="device.completing"
-                        :placeholder="deviceCallbackPlaceholder"
-                        class="h-full min-h-0 overflow-y-auto text-xs font-mono break-all !rounded-xl"
-                        spellcheck="false"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                <!-- Builder ID / Identity Center: 等待用户授权 -->
-                <div
-                  v-else-if="device.session_id && device.status === 'pending'"
-                  class="rounded-xl border border-border bg-muted/20 p-5"
-                >
-                  <div class="flex flex-col items-center text-center space-y-4">
-                    <div class="relative">
-                      <div class="absolute inset-0 rounded-full bg-primary/20 animate-ping" />
-                      <div class="relative w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
-                        <ExternalLink class="w-5 h-5 text-primary" />
-                      </div>
-                    </div>
-
-                    <div class="space-y-1">
-                      <p class="text-sm font-medium">
-                        {{ legacyT('在浏览器中完成授权') }}
-                      </p>
-                      <p class="text-xs text-muted-foreground">
-                        {{ legacyT('授权完成后此页面将自动更新') }}
-                      </p>
-                    </div>
-
-                    <div class="flex items-center gap-1.5 text-xs text-muted-foreground">
-                      <div class="animate-spin rounded-full h-3 w-3 border-[1.5px] border-primary/30 border-t-primary" />
-                      <span>{{ remainingText }}</span>
-                    </div>
-
-                    <div
-                      v-if="totp.code.value"
-                      class="w-full rounded-lg border border-border bg-background p-3"
-                    >
-                      <div class="flex items-center justify-between">
-                        <div class="flex items-center gap-2">
-                          <ShieldCheck class="w-3.5 h-3.5 text-primary" />
-                          <span class="text-[10px] text-muted-foreground">{{ legacyT('MFA 验证码') }}</span>
-                        </div>
-                        <div class="flex items-center gap-1.5">
-                          <span
-                            class="text-lg font-mono font-bold tracking-[0.25em]"
-                          >{{ totp.code.value }}</span>
-                          <button
-                            class="p-1 rounded hover:bg-muted transition-colors"
-                            :title="legacyT('复制验证码')"
-                            @click="copyToClipboard(totp.code.value)"
-                          >
-                            <Copy class="w-3 h-3 text-muted-foreground" />
-                          </button>
-                        </div>
-                      </div>
-                      <div class="mt-2 flex items-center gap-2">
-                        <div class="flex-1 h-1 rounded-full bg-muted overflow-hidden">
-                          <div
-                            class="h-full rounded-full transition-all duration-1000 ease-linear"
-                            :class="totp.remaining.value <= 5 ? 'bg-red-500' : 'bg-primary'"
-                            :style="{ width: `${(totp.remaining.value / 30) * 100}%` }"
-                          />
-                        </div>
-                        <span
-                          class="text-[10px] font-mono tabular-nums shrink-0"
-                          :class="totp.remaining.value <= 5 ? 'text-red-500' : 'text-muted-foreground'"
-                        >{{ totp.remaining.value }}s</span>
-                      </div>
-                    </div>
-
-                    <div class="flex gap-2 w-full">
-                      <Button
-                        class="flex-1"
-                        size="sm"
-                        @click="openDeviceVerificationUrl"
-                      >
-                        <ExternalLink class="w-3.5 h-3.5 mr-1.5" />
-                        {{ legacyT('打开授权页面') }}
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        @click="copyToClipboard(device.verification_uri_complete)"
-                      >
-                        <Copy class="w-3.5 h-3.5" />
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-
-                <!-- 初始状态：当前类型配置 -->
-                <div
-                  v-else
-                  :class="device.auth_type === 'builder_id' ? 'flex h-full flex-col justify-center gap-4' : 'space-y-3'"
-                >
-                  <p
-                    v-if="isSocialDeviceAuth"
-                    class="text-xs text-muted-foreground text-center"
-                  >
-                    {{ legacyT('授权后复制浏览器地址栏的 localhost 回调 URL。') }}
-                  </p>
-
-                  <p
-                    v-else-if="device.auth_type === 'builder_id'"
-                    class="text-xs text-muted-foreground text-center"
-                  >
-                    {{ legacyT('使用个人 AWS Builder ID 进行设备授权，无需额外配置。') }}
-                  </p>
-
-                  <div
-                    v-else
-                    class="space-y-3"
-                  >
-                    <div class="space-y-1.5">
-                      <label class="text-xs font-medium">Start URL</label>
-                      <input
-                        v-model="device.start_url"
-                        type="text"
-                        placeholder="https://your-org.awsapps.com/start"
-                        class="w-full h-8 px-2 text-xs rounded-md border border-border bg-background font-mono focus:outline-none focus:ring-1 focus:ring-ring focus:relative focus:z-10"
-                        spellcheck="false"
-                      >
-                    </div>
-                    <div class="space-y-1.5">
-                      <label class="text-xs font-medium">Region</label>
-                      <ComboboxRoot
-                        :model-value="device.region"
-                        :open="regionComboboxOpen"
-                        @update:model-value="(v: string) => { if (v) device.region = v }"
-                        @update:open="(v: boolean) => { regionComboboxOpen = v; if (v) ensureAwsRegions() }"
-                      >
-                        <ComboboxAnchor class="relative w-full">
-                          <ComboboxInput
-                            :display-value="() => device.region"
-                            :placeholder="legacyT('输入或选择 Region')"
-                            class="w-full h-8 px-2 pr-7 text-xs rounded-md border border-border bg-background font-mono focus:outline-none focus:ring-1 focus:ring-ring focus:relative focus:z-10"
-                            spellcheck="false"
-                            @input="(e: Event) => regionSearch = (e.target as HTMLInputElement).value"
-                            @keydown.enter.prevent="onRegionEnter"
-                          />
-                          <ComboboxTrigger class="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
-                            <ChevronsUpDown class="w-3.5 h-3.5" />
-                          </ComboboxTrigger>
-                        </ComboboxAnchor>
-                        <ComboboxContent
-                          position="popper"
-                          class="z-[99] mt-1 max-h-[200px] w-[--radix-combobox-trigger-width] overflow-y-auto rounded-md border border-border bg-popover shadow-md"
-                        >
-                          <ComboboxViewport>
-                            <ComboboxEmpty class="px-2 py-1.5 text-xs text-muted-foreground">
-                              {{ awsRegionsLoaded ? legacyT('无匹配结果，回车使用自定义值') : legacyT('加载中...') }}
-                            </ComboboxEmpty>
-                            <ComboboxItem
-                              v-for="r in filteredRegions"
-                              :key="r"
-                              :value="r"
-                              class="flex items-center gap-1.5 px-2 py-1.5 text-xs font-mono cursor-pointer rounded-sm outline-none data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground"
-                            >
-                              <Check
-                                class="w-3 h-3 shrink-0"
-                                :class="device.region === r ? 'opacity-100' : 'opacity-0'"
-                              />
-                              {{ r }}
-                            </ComboboxItem>
-                          </ComboboxViewport>
-                        </ComboboxContent>
-                      </ComboboxRoot>
-                    </div>
-                    <div class="space-y-1.5">
-                      <label class="text-xs font-medium text-muted-foreground">{{ legacyT('TOTP Secret (可选, 2FA认证)') }}</label>
-                      <input
-                        v-model="device.totp_secret"
-                        type="text"
-                        placeholder="Base32 secret, 如 JBSWY3DPEHPK3PXP"
-                        class="w-full h-8 px-2 text-xs rounded-md border border-border bg-background font-mono focus:outline-none focus:ring-1 focus:ring-ring focus:relative focus:z-10"
-                        spellcheck="false"
-                      >
-                    </div>
-                  </div>
-
-                  <Button
-                    class="w-full"
-                    :disabled="device.starting || (device.auth_type === 'identity_center' && !device.start_url.trim())"
-                    @click="startDeviceAuth"
-                  >
-                    {{ device.starting ? legacyT('正在准备授权...') : legacyT('开始授权') }}
-                  </Button>
-                </div>
-              </div>
-            </div>
-          </template>
+          <OAuthDeviceAuthPanel
+            v-if="deviceAuthVariant"
+            :variant="deviceAuthVariant"
+            :device="device"
+            :countdown-seconds="deviceCountdown"
+            :totp-code="totp.code.value"
+            :totp-remaining="totp.remaining.value"
+            :kiro-option-disabled="isKiroDeviceAuthOptionDisabled(device.auth_type)"
+            @update:field="(field, value) => { device[field] = value }"
+            @select-windsurf-login-option="selectWindsurfLoginOption"
+            @select-auth-type="selectDeviceAuthType"
+            @reset="resetDevice"
+            @start="startDeviceAuth"
+            @open-verification-url="openDeviceVerificationUrl"
+          />
 
           <!-- 非 Kiro: 原有 OAuth 流程 -->
           <template v-else>
@@ -968,24 +438,10 @@
 import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import { Dialog, Button, Textarea, Popover, PopoverTrigger, PopoverContent } from '@/components/ui'
 import {
-  ComboboxAnchor,
-  ComboboxContent,
-  ComboboxEmpty,
-  ComboboxInput,
-  ComboboxItem,
-  ComboboxRoot,
-  ComboboxTrigger,
-  ComboboxViewport,
-} from 'radix-vue'
-import {
   UserPlus,
   Copy,
   ExternalLink,
   Globe,
-  AlertCircle,
-  ShieldCheck,
-  ChevronsUpDown,
-  Check,
 } from 'lucide-vue-next'
 import { useToast } from '@/composables/useToast'
 import { useClipboard } from '@/composables/useClipboard'
@@ -1005,7 +461,6 @@ import {
   startDeviceAuthorize,
   pollDeviceAuthorize,
   normalizeBatchImportCredentials,
-  getAwsRegions,
 } from '@/api/endpoints'
 import type {
   OAuthBatchImportTaskStatus,
@@ -1013,6 +468,7 @@ import type {
   OAuthBatchImportTaskStatusResponse,
 } from '@/api/endpoints/provider_oauth'
 import ProxyNodeSelect from './ProxyNodeSelect.vue'
+import OAuthDeviceAuthPanel from './OAuthDeviceAuthPanel.vue'
 import { useProxyNodesStore } from '@/stores/proxy-nodes'
 import JsonImportInput from '@/components/common/JsonImportInput.vue'
 import {
@@ -1020,6 +476,12 @@ import {
   resolveAgentIdentityAccessToken,
   requiresCodexBatchImport,
 } from '@/features/providers/utils/oauthCredentialImport'
+import { createInitialDeviceState } from '@/features/providers/utils/oauthDeviceAuth'
+import type {
+  DeviceAuthState,
+  DeviceAuthType,
+  WindsurfLoginOption,
+} from '@/features/providers/utils/oauthDeviceAuth'
 
 const props = defineProps<{
   open: boolean
@@ -1041,38 +503,6 @@ const totp = useTotp()
 // 代理节点选择
 const proxyPopoverOpen = ref(false)
 const selectedProxyNodeId = ref('')
-
-// AWS Regions (动态获取 + 进程内缓存)
-const awsRegions = ref<string[]>([])
-const awsRegionsLoaded = ref(false)
-const regionSearch = ref('')
-const regionComboboxOpen = ref(false)
-
-const filteredRegions = computed(() => {
-  const q = regionSearch.value.trim().toLowerCase()
-  if (!q) return awsRegions.value
-  return awsRegions.value.filter(r => r.includes(q))
-})
-
-async function ensureAwsRegions() {
-  if (awsRegionsLoaded.value) return
-  try {
-    awsRegions.value = await getAwsRegions()
-  } catch {
-    awsRegions.value = ['us-east-1', 'us-east-2', 'us-west-1', 'us-west-2', 'eu-north-1']
-  }
-  awsRegionsLoaded.value = true
-}
-
-function onRegionEnter() {
-  // If no matching item is highlighted, accept the raw input as a custom region value.
-  const raw = regionSearch.value.trim()
-  if (raw && !filteredRegions.value.includes(raw)) {
-    device.value.region = raw
-    regionComboboxOpen.value = false
-    regionSearch.value = ''
-  }
-}
 
 /** 获取已选代理节点的显示名称 */
 function getSelectedNodeLabel(): string {
@@ -1121,52 +551,8 @@ const oauth = ref<OAuthState>(createInitialOAuthState())
 let oauthInitRequestId = 0
 let oauthCompleteRequestId = 0
 
-// 设备授权状态
-type DeviceAuthType = 'default' | 'google' | 'github' | 'builder_id' | 'identity_center' | 'device'
-type WindsurfLoginOption = 'default' | 'google' | 'github'
-
-interface DeviceAuthState {
-  auth_type: DeviceAuthType
-  start_url: string
-  region: string
-  totp_secret: string
-  callback_url: string
-  callback_required: boolean
-  starting: boolean
-  completing: boolean
-  session_id: string
-  user_code: string
-  verification_uri: string
-  verification_uri_complete: string
-  expires_at: number  // unix timestamp (ms)
-  interval: number    // 轮询间隔 (秒)
-  status: 'idle' | 'pending' | 'authorized' | 'expired' | 'error'
-  error: string
-}
-
 const BUILDER_ID_START_URL = 'https://view.awsapps.com/start'
 const BUILDER_ID_REGION = 'us-east-1'
-
-function createInitialDeviceState(): DeviceAuthState {
-  return {
-    auth_type: 'google',
-    start_url: '',
-    region: 'eu-north-1',
-    totp_secret: '',
-    callback_url: '',
-    callback_required: false,
-    starting: false,
-    completing: false,
-    session_id: '',
-    user_code: '',
-    verification_uri: '',
-    verification_uri_complete: '',
-    expires_at: 0,
-    interval: 5,
-    status: 'idle',
-    error: '',
-  }
-}
 
 const device = ref<DeviceAuthState>(createInitialDeviceState())
 let deviceAuthRequestId = 0
@@ -1207,6 +593,12 @@ const isXaiProvider = computed(() => (props.providerType || '').toLowerCase() ==
 const isCodexProvider = computed(() => (props.providerType || '').toLowerCase() === 'codex')
 const isClaudeCodeProvider = computed(() => (props.providerType || '').toLowerCase() === 'claude_code')
 const isDeviceBrowserProvider = computed(() => isKiroProvider.value || isWindsurfProvider.value || isXaiProvider.value)
+const deviceAuthVariant = computed<'windsurf' | 'xai' | 'kiro' | null>(() => {
+  if (isWindsurfProvider.value) return 'windsurf'
+  if (isXaiProvider.value) return 'xai'
+  if (isKiroProvider.value) return 'kiro'
+  return null
+})
 const showAuthorizationMode = computed(() => !isGrokProvider.value)
 const defaultMode = computed<DialogMode>(() => (isGrokProvider.value ? 'import' : 'oauth'))
 
@@ -1243,31 +635,6 @@ const oauthCallbackPlaceholder = computed(() =>
     ? legacyT('粘贴完整回调 URL 或授权码（code#state）')
     : 'http://localhost:xxx/callback?code=...'
 )
-
-const deviceCallbackPlaceholder = computed(() =>
-  isWindsurfProvider.value
-    ? legacyT('粘贴包含 token=...&state=... 的回调 URL；session token/apiKey 也可直接粘贴，普通 token 请用导入授权')
-    : `http://localhost:49153/oauth/callback?login_option=${device.value.auth_type}&code=...&state=...`
-)
-
-const deviceCountdownFormatted = computed(() => {
-  const s = deviceCountdown.value
-  const min = Math.floor(s / 60)
-  const sec = s % 60
-  return `${min}:${String(sec).padStart(2, '0')}`
-})
-
-const sessionRemainingText = computed(() => (
-  isEnglishLocale()
-    ? `Session remaining ${deviceCountdownFormatted.value}`
-    : `会话剩余 ${deviceCountdownFormatted.value}`
-))
-
-const remainingText = computed(() => (
-  isEnglishLocale()
-    ? `${deviceCountdownFormatted.value} remaining`
-    : `剩余 ${deviceCountdownFormatted.value}`
-))
 
 const oauthBusy = computed(() =>
   oauth.value.starting || oauth.value.completing
